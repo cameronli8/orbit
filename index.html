@@ -1065,6 +1065,56 @@ input[type="range"]::-moz-range-thumb {
 }
 .poi-chip:not(.on) .poi-chip-count { color: var(--muted); }
 
+/* ----- Quick-select bar above the POI chips ------------------------- */
+/* 90% of filter interactions are "everything on", "everything off", or
+   "only outdoor / only food / only culture" — so we give those their own
+   row of small pill buttons above the individual chip toggles. Clicking
+   a bucket button sets the active set to that bucket's members exactly,
+   so the user gets a clean solo-view without having to click 7 chips off. */
+.poi-filter-header {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 8px;
+}
+.poi-quick {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  border-radius: 999px;
+  padding: 4px 11px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--fg);
+  cursor: pointer;
+  transition: all 0.12s var(--ease);
+  box-shadow: 0 1px 3px rgba(10, 10, 10, 0.1);
+  opacity: 0.72;
+}
+.poi-quick:hover {
+  transform: translateY(-1px);
+  opacity: 1;
+  box-shadow: 0 2px 6px rgba(10, 10, 10, 0.16);
+}
+.poi-quick.active {
+  opacity: 1;
+  color: var(--accent);
+  border-color: var(--accent);
+  box-shadow: 0 2px 6px rgba(10, 10, 10, 0.14), inset 0 0 0 1px var(--accent);
+}
+.poi-quick-sep {
+  color: var(--muted);
+  opacity: 0.5;
+  margin: 0 3px;
+  font-size: 12px;
+  align-self: center;
+  user-select: none;
+}
+
 /* ----- POI markers (professional SVG icon mode) --------------------- */
 .poi-pin {
   background: transparent !important;
@@ -3648,6 +3698,15 @@ wᵢ = exp(−dᵢ² / (2σ²)), σ ≈ 2.4 km</span>
     <!-- POI category filter — populated dynamically by renderPoiFilter() -->
     <div class="poi-filter-wrap">
       <div class="poi-filter-title">What's on the map</div>
+      <!-- Quick-select row: common intents in one click each -->
+      <div class="poi-filter-header" id="poiQuick">
+        <button class="poi-quick" data-quick="all"     onclick="poiSelectAll()"          title="Show every category">All</button>
+        <button class="poi-quick" data-quick="none"    onclick="poiSelectNone()"         title="Hide all categories">None</button>
+        <span class="poi-quick-sep">·</span>
+        <button class="poi-quick" data-quick="food"    onclick="poiSelectBucket('food')" title="Restaurants, cafés, bars, bakeries">Food</button>
+        <button class="poi-quick" data-quick="outdoor" onclick="poiSelectBucket('outdoor')" title="Parks, beaches, gyms">Outdoor</button>
+        <button class="poi-quick" data-quick="culture" onclick="poiSelectBucket('culture')" title="Galleries, cinemas, libraries">Culture</button>
+      </div>
       <div class="poi-filter" id="poiFilter"></div>
     </div>
 
@@ -4665,7 +4724,10 @@ const POI_GROUP_RARITY = {
   cafe: 0.55,  restaurant: 0.40,
 };
 
-let activePoiGroups = new Set(Object.keys(POI_GROUPS));   // all on by default
+// Default-on set: the four categories renters reliably care about most.
+// Parks, beaches, bakeries, galleries, cinemas, and libraries are available
+// via the "All" button or their individual chips — just not on by default.
+let activePoiGroups = new Set(['restaurant', 'cafe', 'bar', 'gym']);
 // When a suburb's drawer is open we "focus" that suburb — its POIs expand
 // to full detail, while other suburbs stay collapsed to headline markers.
 // Null = no focus, city-wide summary view.
@@ -5541,8 +5603,14 @@ function renderPois() {
   //            rest are skipped entirely so the focused area owns the stage.
   // Grid-binning happens inline so each pixel cell keeps its top-salience
   // POI and overlapping markers from neighbouring suburbs collapse cleanly.
+  // The cell key is group-scoped (`x:y:group`) — restaurants declutter
+  // against restaurants and cafés against cafés, but the two groups don't
+  // compete with each other for the same pixel. Without that, whichever
+  // group carries the higher rarity prior (cafés at 0.55) would win every
+  // tie and the other group (restaurants at 0.40) would vanish whenever
+  // both were toggled on simultaneously.
   const cell = _poiCellSize(zoom);
-  const cells = new Map();   // cellKey → POI
+  const cells = new Map();   // cellKey (x:y:group) → POI
   const headlineCap = POI_HEADLINE_MAX_DEFAULT;
   const focusedCap  = POI_FOCUSED_MAX;
 
@@ -5555,9 +5623,10 @@ function renderPois() {
     for (let i = 0; i < list.length && picked < cap; i++) {
       const p = list[i];
       if (!activePoiGroups.has(p.g)) continue;
-      // Grid-bin in pixel space: highest-salience POI wins each cell.
+      // Grid-bin in pixel space, keyed per group so different categories
+      // don't evict each other. Highest-salience POI wins each per-group cell.
       const pt = map.project([p.la, p.ln], zoom);
-      const cKey = `${Math.floor(pt.x / cell)}:${Math.floor(pt.y / cell)}`;
+      const cKey = `${Math.floor(pt.x / cell)}:${Math.floor(pt.y / cell)}:${p.g}`;
       const cur = cells.get(cKey);
       if (!cur || p._salience > cur._salience) cells.set(cKey, p);
       picked++;
@@ -5636,6 +5705,40 @@ function setFocusedSuburb(name) {
   if (poiLoaded) renderPois();
 }
 
+// Buckets used by the quick-select row. Keys match the `data-quick` attrs
+// on the header buttons. Each bucket names the POI_GROUPS it covers —
+// clicking "Food" sets activePoiGroups to exactly these four.
+const POI_GROUP_BUCKETS = {
+  food:    ['restaurant', 'cafe', 'bar', 'bakery'],
+  outdoor: ['park', 'beach', 'gym'],
+  culture: ['gallery', 'cinema', 'library'],
+};
+
+// Replace the active set wholesale. Shared entry point so all the quick
+// actions have identical re-render semantics.
+function setPoiGroups(groups) {
+  activePoiGroups = new Set(groups);
+  renderPois();
+  renderPoiFilter();
+}
+function poiSelectAll()         { setPoiGroups(Object.keys(POI_GROUPS)); }
+function poiSelectNone()        { setPoiGroups([]); }
+function poiSelectBucket(name)  { setPoiGroups(POI_GROUP_BUCKETS[name] || []); }
+
+// Which quick-select button should light up? Returns 'all', 'none', a
+// bucket name, or null (a custom mix the user built with individual chips).
+function poiActiveQuick() {
+  const allKeys = Object.keys(POI_GROUPS);
+  if (activePoiGroups.size === 0) return 'none';
+  if (activePoiGroups.size === allKeys.length
+      && allKeys.every(k => activePoiGroups.has(k))) return 'all';
+  for (const [name, keys] of Object.entries(POI_GROUP_BUCKETS)) {
+    if (keys.length === activePoiGroups.size
+        && keys.every(k => activePoiGroups.has(k))) return name;
+  }
+  return null;
+}
+
 function togglePoiGroup(g) {
   if (activePoiGroups.has(g)) activePoiGroups.delete(g);
   else activePoiGroups.add(g);
@@ -5664,6 +5767,16 @@ function renderPoiFilter() {
       </button>`;
   }).join('');
   root.innerHTML = chips;
+
+  // Sync the active state on the quick-select row so the user can see
+  // which preset (if any) their current selection matches.
+  const quickRoot = document.getElementById('poiQuick');
+  if (quickRoot) {
+    const active = poiActiveQuick();
+    quickRoot.querySelectorAll('.poi-quick').forEach(btn => {
+      btn.classList.toggle('active', btn.dataset.quick === active);
+    });
+  }
 }
 
 // ---- Detail modal -------------------------------------------------------

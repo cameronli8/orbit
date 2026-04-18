@@ -150,3 +150,101 @@ def extract_cuisine(label: str) -> str | None:
         if normalize_label(cuisine) in lbl:
             return cuisine
     return None
+
+
+# ---------------------------------------------------------------------------
+# Breakdowns — finer-grained keyword sets so explanations can reference what's
+# *actually* in a suburb. The old "X parks, beaches or outdoor venues" string
+# misled users (e.g. Chippendale, which has parks but no beaches). Each
+# breakdown is a subset of its parent dimension's categories.
+#
+# Order matters in the resulting dict — the frontend/LLM can cite the top
+# non-zero entries as a list of real features.
+# ---------------------------------------------------------------------------
+OUTDOOR_BREAKDOWNS = {
+    "beaches":       {"Beach", "Surf Spot"},
+    "parks":         {"Park", "Garden", "Botanical Garden", "Public Garden",
+                      "Dog Park", "Nature Preserve", "Nature Reserve"},
+    "trails":        {"Trail", "Bike Trail", "Hiking Trail"},
+    "waterfront":    {"Marina", "Harbor", "Pier", "Bay", "River", "Lake"},
+    "sports_grounds":{"Sports Field", "Athletic Field", "Tennis Court",
+                      "Basketball Court", "Soccer Field", "Golf Course",
+                      "Skate Park", "Rock Climbing"},
+    "pools":         {"Pool", "Swimming Pool"},
+    "lookouts":      {"Scenic Lookout", "Scenic Point"},
+    "playgrounds":   {"Playground"},
+}
+
+SOCIAL_BREAKDOWNS = {
+    "bars":          {"Bar", "Cocktail Bar", "Wine Bar", "Beer Bar",
+                      "Whisky Bar", "Dive Bar", "Speakeasy", "Hotel Bar"},
+    "pubs":          {"Pub", "Beer Garden", "Gastropub", "Sports Bar"},
+    "nightclubs":    {"Nightclub", "Dance Club"},
+    "live_music":    {"Live Music Venue", "Music Venue", "Jazz Club",
+                      "Rock Club", "Concert Hall", "Performing Arts Venue"},
+    "breweries":     {"Brewery", "Tasting Room"},
+    "karaoke":       {"Karaoke Bar"},
+}
+
+AESTHETIC_BREAKDOWNS = {
+    "galleries":     {"Art Gallery", "Art Studio", "Creative Space"},
+    "museums":       {"Museum", "Art Museum"},
+    "vintage":       {"Vintage Store", "Thrift Store", "Antique Store"},
+    "indie_retail":  {"Record Store", "Independent Bookstore", "Comic Shop",
+                      "Arts and Crafts Store", "Stationery Store",
+                      "Design Studio"},
+    "cinemas":       {"Cinema", "Indie Theater"},
+    "bookstores":    {"Bookstore"},
+    "tattoo_piercing": {"Tattoo Parlor", "Piercing Parlor"},
+}
+
+CULINARY_BREAKDOWNS = {
+    "restaurants":   {"Restaurant"},
+    "cafes":         {"Café", "Cafe", "Coffee Shop"},
+    "bakeries":      {"Bakery"},
+    "specialty_food":{"Specialty Food Store", "Gourmet Shop", "Deli",
+                      "Delicatessen", "Cheese Shop", "Wine Shop", "Butcher"},
+    "markets":       {"Farmers Market", "Food Truck"},
+    "desserts":      {"Dessert Shop", "Ice Cream Shop", "Frozen Yogurt Shop",
+                      "Chocolatier"},
+}
+
+COMMUNITY_BREAKDOWNS = {
+    "libraries":     {"Library"},
+    "schools":       {"School", "Elementary School", "Middle School",
+                      "High School", "Preschool", "Daycare", "Nursery School"},
+    "worship":       {"Place of Worship", "Church", "Mosque", "Synagogue",
+                      "Temple", "Buddhist Temple", "Religious Institution",
+                      "Spiritual Center"},
+    "community_centers": {"Community Center", "Senior Center", "Youth Center",
+                          "Community Garden"},
+    "civic":         {"Town Hall", "City Hall", "Government Building",
+                      "Post Office"},
+    "medical":       {"Medical Center", "Doctor's Office", "Dentist"},
+}
+
+# Master breakdown map so downstream code can iterate uniformly.
+DIMENSION_BREAKDOWNS = {
+    "outdoor":       OUTDOOR_BREAKDOWNS,
+    "social_energy": SOCIAL_BREAKDOWNS,
+    "aesthetic":     AESTHETIC_BREAKDOWNS,
+    "culinary":      CULINARY_BREAKDOWNS,
+    "community":     COMMUNITY_BREAKDOWNS,
+}
+
+
+def count_breakdowns(
+    labels: list[str],
+    breakdowns: dict,
+) -> dict[str, int]:
+    """Count how many labels match each sub-category in a breakdown map.
+    Labels can match multiple buckets (substring-based matching by design).
+    Returns a dict with every breakdown key, even zeros, so downstream
+    consumers don't need to worry about missing keys.
+    """
+    out: dict[str, int] = {k: 0 for k in breakdowns}
+    for lbl in labels:
+        for key, kws in breakdowns.items():
+            if label_matches_any(lbl, kws):
+                out[key] += 1
+    return out

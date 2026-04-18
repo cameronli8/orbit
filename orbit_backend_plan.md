@@ -1,4 +1,4 @@
-# Homing — Backend Plan (solo dev, personality-first)
+# Orbit — Backend Plan (solo dev, personality-first)
 
 Rewritten to center on the one feature that actually makes this product worth building: **suburbs matched to who you are, not just what you can afford.** Everything else is a filter layered on top.
 
@@ -8,7 +8,7 @@ This plan is scoped for one developer over a hackathon weekend. Features that do
 
 ## 1. The one big idea
 
-Every property portal in Sydney asks what you want (bedrooms, budget, postcode). Homing asks who you are and then shows you where that person lives. The user answers a short personality quiz, Homing translates their answers into a six-dimensional "taste vector," and the map colors every suburb green to red by how close its own taste vector sits to theirs.
+Every property portal in Sydney asks what you want (bedrooms, budget, postcode). Orbit asks who you are and then shows you where that person lives. The user answers a short personality quiz, Orbit translates their answers into a six-dimensional "taste vector," and the map colors every suburb green to red by how close its own taste vector sits to theirs.
 
 The taste vector is the spine of the product. If you can explain what the six dimensions are and how both users and suburbs get a score on them, you've explained the whole system.
 
@@ -99,7 +99,7 @@ data/
 build.py                     # runs the whole pipeline
 api.py                       # the two-endpoint FastAPI
 quiz.py                      # questions + answer-to-weight tables
-homing_demo.html             # existing frontend, wired to /match
+index.html                   # existing frontend, wired to /match
 ```
 
 One command to build: `python build.py`. One command to serve: `uvicorn api:app`. A judge can run this locally if they want to poke at it — and that itself is a small but real credibility signal for a data hackathon.

@@ -173,6 +173,7 @@ QUESTIONS: List[dict] = [
              "weights": {"outdoor": +20, "aesthetic": +5, "pace": -3}},
         ],
     },
+
 ]
 
 

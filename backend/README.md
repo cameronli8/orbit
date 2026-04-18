@@ -1,4 +1,4 @@
-# Homing — Backend
+# Orbit — Backend
 
 Sydney suburb matcher built on Foursquare OS Places. Every suburb is scored on six personality dimensions — social energy, aesthetic, pace, outdoor, culinary, community — and matched against the user's quiz answers via preference-aware cosine similarity with a smooth budget gate.
 
@@ -22,7 +22,53 @@ data/
 ## First-time setup
 
 ```bash
-pip install polars pyarrow pandas numpy fastapi "uvicorn[standard]" --break-system-packages
+pip install -r backend/requirements.txt --break-system-packages
+```
+
+### AI layer (optional but recommended)
+
+Orbit writes suburb-specific copy and user personality profiles with OpenAI.
+Set up a `.env` in the project root:
+
+```bash
+cp .env.example .env
+# edit .env and paste your OpenAI key into OPENAI_API_KEY=
+```
+
+Without a key the backend still works — every LLM response falls back to the
+deterministic template strings. Hit `GET /health` and look at the `llm` field
+to see whether the AI layer is live.
+
+### Live rental listings (Domain API)
+
+Out of the box the map shows generated mock listings (with deep links to
+the matching `realestate.com.au` filter). To swap them for real Sydney
+rentals, sign up at [developer.domain.com.au](https://developer.domain.com.au/),
+create a project with the `Listings` package, and paste the OAuth credentials
+into `.env`:
+
+```env
+DOMAIN_CLIENT_ID=your-client-id
+DOMAIN_CLIENT_SECRET=your-client-secret
+```
+
+The first time `/match` is called for a suburb, `real_listings.fetch_listings`
+exchanges credentials for a Bearer token at `auth.domain.com.au/v1/connect/token`,
+hits `POST /v1/listings/residential/_search` filtered to that suburb + a
+2BR price band, maps the response into Orbit's listing schema, and writes
+the result to `data/listings_cache.json`. Subsequent calls within 24h
+(`ORBIT_LISTINGS_CACHE_H`) return cached results — keeping demo-day usage
+well inside the free tier.
+
+`GET /health` returns `"listings_source": "domain"` when the live path is
+active, `"mock"` otherwise. Any failure (auth error, network timeout, empty
+response) silently falls back to mocks so the demo never breaks.
+
+Smoke test from the CLI:
+
+```bash
+cd backend
+python3 real_listings.py Bondi 2
 ```
 
 ## Build the feature file
@@ -48,10 +94,13 @@ cd backend
 uvicorn api:app --reload --port 8000
 ```
 
-- `GET /health` → `{status, n_suburbs, n_questions}`
+- `GET /health` → `{status, n_suburbs, n_questions, llm}`
 - `GET /quiz` → 7 questions (no scoring-weight leak)
 - `POST /match {answers, budget, limit}` → ranked suburbs with `match_score`, rent, six dimension scores, three positive + two negative explanation strings
-- `GET /suburb/{name}?<user_vector>` → drawer payload with dimensions, mock Domain listings, explanations relative to the user's vector
+- `POST /profile {answers}` → `{headline, summary, wants, source, user_vector}` — LLM-written renter persona
+- `GET /suburb/{name}?<user_vector>&persona=…` → drawer payload with dimensions, mock Domain listings, template explanations, the strict evidence blob, **and an `ai` block** (LLM headline, summary, positive/negative bullets) grounded in the same evidence
+
+Then open `../index.html` in a browser. The frontend is a single static file that talks to `http://localhost:8000` — CORS is wildcard-open so no proxy is needed.
 
 ## How matching works
 
@@ -59,7 +108,8 @@ uvicorn api:app --reload --port 8000
 2. Both the user vector and each suburb's vector are mean-centered at 50, so dimensions the user is indifferent about contribute zero to the match.
 3. Cosine similarity gives a raw [0, 1] similarity rescaled to a 0-100 `match_score`.
 4. A smooth logistic budget penalty down-weights (but doesn't hide) suburbs above budget — unaffordable "great fits" stay visible.
-5. Explanations are templated from live computed counts (e.g. "39 galleries/studios/creative retail and 88% independent businesses"). No LLM, no hallucination.
+5. Template explanations are computed from live counts and per-suburb sub-category breakdowns (e.g. "8 parks and 2 playgrounds within 0.6 km²"). Because the templates pull from `breakdowns_json` in `suburbs.parquet`, they only ever cite sub-categories with a non-zero count in that specific suburb — so Chippendale never claims beaches.
+6. On top of that, `llm.py` asks GPT-4o-mini to write a second-person persona and tailored suburb copy. The model sees only the same strict evidence blob (`matcher.evidence_for`) and is forbidden from citing any feature not in it. If the API is unreachable or the key is missing, the frontend gracefully falls back to the template strings.
 
 ## Sanity checks the system passes
 

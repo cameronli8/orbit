@@ -1,4 +1,4 @@
-# Homing — Technical Requirements
+# Orbit — Technical Requirements
 
 Everything you need to go from empty folder to working demo. Assumes Python 3.11+, a laptop with ~3 GB free disk, and a decent internet connection for the one-time data pulls.
 
@@ -120,7 +120,7 @@ Serve with `uvicorn api:app --reload --port 8000`.
 
 ## 6. Frontend wiring
 
-`homing_demo.html` currently uses hardcoded `suburbs` array. Two surgical edits replace it with live data from the API.
+`index.html` currently uses hardcoded `suburbs` array. Two surgical edits replace it with live data from the API.
 
 The quiz UI doesn't exist yet in the frontend. For the demo you have two options. The quick option is reusing the existing sliders as the quiz — each slider becomes one dimension input, directly writing to the user vector. The real option is building a step-by-step quiz modal that runs before the map loads, collects answers, posts to `/match`, and populates the map with the response. The real option is better for the pitch but costs most of a day; the quick option is acceptable if time is tight.
 
@@ -172,7 +172,7 @@ serve:
 
 demo: build
 	uvicorn api:app --reload --port 8000 &
-	open homing_demo.html
+	open index.html
 ```
 
 Freeze your installed packages to `requirements.txt` with `pip freeze > requirements.txt` so a judge can reproduce the environment in one command.

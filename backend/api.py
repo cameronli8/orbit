@@ -1,5 +1,5 @@
 """
-api.py  —  Homing's two-endpoint FastAPI server.
+api.py  —  Orbit's FastAPI server.
 
 Run with:
     cd backend
@@ -22,12 +22,14 @@ Kept deliberately boring: no auth, no rate limiting, no analytics, no db.
 hits an in-memory pandas dataframe.
 """
 
+import json
 from typing import Dict, List, Optional
 from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from quiz import QUESTIONS, score_user, quiz_payload, DIMENSIONS
@@ -35,12 +37,19 @@ from matcher import (
     SUBURBS,
     score_suburbs,
     build_explanations,
-    mock_listings,
+    get_listings,
+    evidence_for,
 )
+
+# How many listings each suburb serves to the map/drawer. 3 keeps the map
+# from getting cluttered while still giving the drawer enough variety.
+LISTINGS_PER_SUBURB = 3
+from llm import profile_user, explain_suburb, llm_status
+from pois import load_pois, group_counts
 
 
 app = FastAPI(
-    title="Homing API",
+    title="Orbit API",
     description="Match Sydney renters to suburbs that fit who they are.",
     version="0.1.0",
 )
@@ -94,11 +103,27 @@ class SuburbMatch(BaseModel):
     dimensions:   DimensionScores
     positive:     List[str]
     negative:     List[str]
+    listings:     List[dict] = []
 
 
 class MatchResponse(BaseModel):
     user_vector: DimensionScores
     suburbs:     List[SuburbMatch]
+
+
+class ProfileRequest(BaseModel):
+    answers: Dict[str, str] = Field(
+        ...,
+        description="Mapping of question_id -> chosen answer_id.",
+    )
+
+
+class ProfileResponse(BaseModel):
+    headline:    str
+    summary:     str
+    wants:       List[str]
+    source:      str
+    user_vector: DimensionScores
 
 
 # ---------------------------------------------------------------------------
@@ -113,10 +138,16 @@ def _dim_dict(row: pd.Series) -> DimensionScores:
 # ---------------------------------------------------------------------------
 @app.get("/health")
 def health():
+    try:
+        from real_listings import DOMAIN_ENABLED
+    except Exception:
+        DOMAIN_ENABLED = False
     return {
         "status": "ok",
         "n_suburbs": int(len(SUBURBS)),
         "n_questions": len(QUESTIONS),
+        "llm": llm_status(),
+        "listings_source": "domain" if DOMAIN_ENABLED else "mock",
     }
 
 
@@ -139,6 +170,13 @@ def post_match(req: MatchRequest):
     suburbs: List[SuburbMatch] = []
     for _, row in ranked.iterrows():
         expl = build_explanations(row, user_vec)
+        listings = get_listings(
+            str(row["suburb"]),
+            float(row["rent_2br"]),
+            n=LISTINGS_PER_SUBURB,
+            suburb_lat=float(row["lat"]),
+            suburb_lng=float(row["lng"]),
+        )
         suburbs.append(
             SuburbMatch(
                 suburb=str(row["suburb"]),
@@ -149,12 +187,29 @@ def post_match(req: MatchRequest):
                 dimensions=_dim_dict(row),
                 positive=expl["positive"],
                 negative=expl["negative"],
+                listings=listings,
             )
         )
 
     return MatchResponse(
         user_vector=DimensionScores(**user_vec),
         suburbs=suburbs,
+    )
+
+
+@app.post("/profile", response_model=ProfileResponse)
+def post_profile(req: ProfileRequest):
+    """Score the quiz and return an LLM-written personality profile."""
+    if not req.answers:
+        raise HTTPException(status_code=400, detail="No quiz answers submitted.")
+    user_vec = score_user(req.answers)
+    prof = profile_user(user_vec, req.answers)
+    return ProfileResponse(
+        headline=prof.get("headline", "Your Orbit profile"),
+        summary=prof.get("summary", ""),
+        wants=prof.get("wants", []),
+        source=prof.get("source", "fallback"),
+        user_vector=DimensionScores(**user_vec),
     )
 
 
@@ -167,6 +222,8 @@ def get_suburb(
     outdoor:       Optional[float] = Query(None, ge=0, le=100),
     culinary:      Optional[float] = Query(None, ge=0, le=100),
     community:     Optional[float] = Query(None, ge=0, le=100),
+    persona:       Optional[str]   = Query(None, description="User persona summary from /profile — grounds LLM copy."),
+    ai:            bool            = Query(True,  description="Set false to skip LLM calls."),
 ):
     """Full drawer payload for a single suburb.
 
@@ -174,6 +231,10 @@ def get_suburb(
     be personalised. If any dimension is omitted, the neutral baseline
     (50) is used for that dimension — the explanation then reads like
     'this suburb's standout features' rather than 'why this fits you'.
+
+    If `ai=true` (default) and the LLM is configured, we also return an
+    AI-written headline, summary and positive/negative bullets grounded in
+    the same evidence blob that drives the template explanations.
     """
     match = SUBURBS[SUBURBS["suburb"].str.lower() == name.lower()]
     if match.empty:
@@ -190,7 +251,23 @@ def get_suburb(
     }
 
     expl = build_explanations(row, user_vec, n_positive=4, n_negative=3)
-    listings = mock_listings(str(row["suburb"]), float(row["rent_2br"]))
+    listings = get_listings(
+        str(row["suburb"]),
+        float(row["rent_2br"]),
+        n=LISTINGS_PER_SUBURB,
+        suburb_lat=float(row["lat"]),
+        suburb_lng=float(row["lng"]),
+    )
+    evidence = evidence_for(row, user_vec)
+
+    ai_payload = None
+    if ai:
+        ai_payload = explain_suburb(
+            evidence,
+            profile_summary=(persona or ""),
+            template_positive=expl["positive"],
+            template_negative=expl["negative"],
+        )
 
     return {
         "suburb":       str(row["suburb"]),
@@ -203,6 +280,11 @@ def get_suburb(
         "positive":     expl["positive"],
         "negative":     expl["negative"],
         "listings":     listings,
+        # Evidence the LLM was allowed to draw from — exposed so the
+        # frontend can show the underlying facts ("12 cafés, 3 parks...")
+        # and so judges can audit every claim.
+        "evidence":     evidence,
+        "ai":           ai_payload,
         # Raw counts so the drawer can show deeper stats if it wants
         "raw": {
             "n_social":     int(row["n_social"]),
@@ -219,12 +301,75 @@ def get_suburb(
 
 
 # ---------------------------------------------------------------------------
+# Suburb polygon GeoJSON — served from data/suburbs.geojson. Generated once
+# by `python3 backend/fetch_suburb_polygons.py`. The frontend hits this
+# instead of fetching the file directly, so opening index.html via file:// or
+# any other origin still works (CORS is wildcard-open).
+# ---------------------------------------------------------------------------
+_GEOJSON_PATH = Path(__file__).parent.parent / "data" / "suburbs.geojson"
+_GEOJSON_CACHE: Optional[dict] = None
+
+
+def _load_geojson() -> Optional[dict]:
+    global _GEOJSON_CACHE
+    if _GEOJSON_CACHE is not None:
+        return _GEOJSON_CACHE
+    if not _GEOJSON_PATH.exists():
+        return None
+    try:
+        _GEOJSON_CACHE = json.loads(_GEOJSON_PATH.read_text())
+    except Exception:
+        return None
+    return _GEOJSON_CACHE
+
+
+# ---------------------------------------------------------------------------
+# POIs — the "main feature" map layer. Returns a compact list of ~7k POIs
+# classified into display groups (cafe, bar, restaurant, park, gym, etc.).
+# The frontend fetches this once at session start and renders it as a
+# category-filterable overlay on top of the heatmap.
+#
+# Optional ?groups=cafe,bar filter lets callers request a subset.
+# Response shape: {"groups": {group: count}, "pois": [{id, n, la, ln, g, s}]}.
+# ---------------------------------------------------------------------------
+@app.get("/pois")
+def get_pois(groups: Optional[str] = Query(None, description="Comma-separated group filter")):
+    pois = load_pois()
+    if groups:
+        wanted = {g.strip().lower() for g in groups.split(",") if g.strip()}
+        pois = [p for p in pois if p["g"] in wanted]
+    return {
+        "groups": group_counts(),
+        "pois": pois,
+    }
+
+
+@app.get("/polygons")
+def get_polygons():
+    gj = _load_geojson()
+    if gj is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                "data/suburbs.geojson not found. Run "
+                "`python3 backend/fetch_suburb_polygons.py` once to generate it."
+            ),
+        )
+    return JSONResponse(content=gj)
+
+
+# ---------------------------------------------------------------------------
 # Optional root index so hitting localhost:8000 in a browser isn't a 404.
 # ---------------------------------------------------------------------------
 @app.get("/")
 def index():
     return {
-        "name": "Homing API",
-        "endpoints": ["/health", "/quiz", "/match (POST)", "/suburb/{name}"],
+        "name": "Orbit API",
+        "endpoints": [
+            "/health", "/quiz", "/match (POST)", "/profile (POST)",
+            "/suburb/{name}", "/polygons", "/pois",
+        ],
         "suburbs_loaded": int(len(SUBURBS)),
+        "polygons_loaded": _load_geojson() is not None,
+        "llm": llm_status(),
     }

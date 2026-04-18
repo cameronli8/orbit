@@ -1,0 +1,3960 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ORBIT — Find your Sydney</title>
+
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+
+<!-- Leaflet -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<style>
+:root {
+  --bg: #fafaf9;
+  --surface: #ffffff;
+  --fg: #0a0a0a;
+  --muted: #64748b;
+  --muted-2: #94a3b8;
+  --line: #e8eaee;
+  --line-soft: #f1f3f6;
+  --green: #15803d;
+  --green-soft: #22c55e;
+  --red: #b91c1c;
+  --red-soft: #ef4444;
+
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.03), 0 1px 3px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 12px rgba(15, 23, 42, 0.05), 0 2px 4px rgba(15, 23, 42, 0.03);
+  --shadow-lg: 0 20px 40px rgba(15, 23, 42, 0.08), 0 4px 12px rgba(15, 23, 42, 0.04);
+
+  --r-sm: 6px;
+  --r-md: 10px;
+  --r-lg: 14px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body {
+  height: 100%;
+  font-family: 'Space Grotesk', -apple-system, sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+::selection { background: rgba(10, 10, 10, 0.12); }
+
+/* ---------- Layout ---------- */
+/* The right ("drawer") column collapses to 0 when no suburb is open, so
+   the map grows to fill that space. `grid-template-columns` interpolates
+   cleanly between the two fixed-px tracks, giving a smooth reveal. */
+.app {
+  display: grid;
+  grid-template-rows: 60px 1fr;
+  grid-template-columns: 340px 1fr 0px;
+  grid-template-areas:
+    "header header header"
+    "profile map drawer";
+  height: 100vh;
+  background: var(--bg);
+  transition: grid-template-columns 0.42s var(--ease);
+}
+.app.drawer-open {
+  grid-template-columns: 340px 1fr 440px;
+}
+
+/* ---------- Header ---------- */
+header {
+  grid-area: header;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 28px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(250, 250, 249, 0.85);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  z-index: 1000;
+}
+.logo {
+  font-weight: 700;
+  font-size: 19px;
+  letter-spacing: -0.02em;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.logo-mark {
+  width: 22px; height: 22px;
+  border-radius: 7px;
+  background: var(--fg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: 0 2px 6px rgba(10,10,10,0.18);
+  position: relative;
+}
+.logo-mark::after {
+  content: "";
+  width: 8px; height: 8px;
+  background: var(--surface);
+  border-radius: 50%;
+}
+.header-meta {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+.pill {
+  padding: 6px 12px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+.pill.live::before {
+  content: "";
+  width: 6px; height: 6px;
+  background: var(--fg);
+  border-radius: 50%;
+  box-shadow: 0 0 0 3px rgba(10,10,10,0.1);
+  animation: pulse 2s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.9); }
+}
+
+/* ---------- Profile (left) ---------- */
+.profile {
+  grid-area: profile;
+  border-right: 1px solid var(--line);
+  padding: 28px 24px 40px;
+  overflow-y: auto;
+}
+.profile::-webkit-scrollbar { width: 8px; }
+.profile::-webkit-scrollbar-track { background: transparent; }
+.profile::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+
+.section-label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  margin-bottom: 14px;
+}
+
+h1 {
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.15;
+  margin-bottom: 6px;
+}
+.subhead {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 24px;
+  line-height: 1.55;
+}
+
+.input-group { margin-bottom: 22px; }
+.input-label {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.input-label .value {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  background: var(--fg);
+  color: var(--surface);
+  padding: 4px 10px;
+  border-radius: 999px;
+}
+
+input[type="range"] {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 4px;
+  background: var(--line);
+  outline: none; cursor: pointer;
+  border-radius: 999px;
+  transition: background 0.2s var(--ease);
+}
+input[type="range"]:hover { background: #d8dbe1; }
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 18px; height: 18px;
+  background: var(--surface);
+  border: 2px solid var(--fg);
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: var(--shadow-sm);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 18px; height: 18px;
+  background: var(--surface);
+  border: 2px solid var(--fg);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+/* Manual numeric entry that lives next to the slider. */
+.budget-manual {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--muted);
+}
+.budget-manual label {
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-size: 10px;
+}
+.budget-manual .prefix {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  padding: 4px 8px;
+  background: var(--surface);
+  transition: border-color 0.2s var(--ease);
+}
+.budget-manual .prefix:focus-within {
+  border-color: var(--fg);
+}
+.budget-manual .prefix span {
+  color: var(--muted);
+  font-weight: 500;
+}
+.budget-manual input[type="number"] {
+  width: 76px;
+  border: none;
+  outline: none;
+  background: transparent;
+  font: inherit;
+  color: var(--fg);
+  font-weight: 600;
+  text-align: right;
+  padding: 0;
+  /* Remove the native number spinners so it reads as a clean pill. */
+  -moz-appearance: textfield;
+}
+.budget-manual input[type="number"]::-webkit-outer-spin-button,
+.budget-manual input[type="number"]::-webkit-inner-spin-button {
+  -webkit-appearance: none; margin: 0;
+}
+.budget-manual .unit {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.05em;
+}
+
+.slider-labels {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10px;
+  color: var(--muted);
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-top: 8px;
+}
+
+.divider {
+  height: 1px;
+  background: var(--line);
+  margin: 22px 0;
+}
+
+.taste-bars { display: flex; flex-direction: column; gap: 12px; }
+.tbar-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.tbar-name {
+  flex: 0 0 95px;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.tbar-track {
+  flex: 1;
+  height: 6px;
+  background: var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+.tbar-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  background: var(--fg);
+  border-radius: 999px;
+  transition: width 0.5s var(--ease);
+}
+.tbar-val {
+  flex: 0 0 26px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  text-align: right;
+  font-weight: 600;
+}
+
+.ghost-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fg);
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+}
+.ghost-btn:hover {
+  background: var(--fg);
+  color: var(--surface);
+  border-color: var(--fg);
+}
+
+.meta-stat {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 0;
+  font-size: 12.5px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.meta-stat:last-child { border: none; }
+.meta-stat .label { color: var(--muted); }
+.meta-stat .num {
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+}
+
+/* ---------- Map ---------- */
+.map-wrap {
+  grid-area: map;
+  position: relative;
+  overflow: hidden;
+}
+#map {
+  width: 100%; height: 100%;
+  background: var(--bg);
+}
+.leaflet-container { background: var(--bg) !important; }
+
+/* Grayscale basemap tiles only — let the heatmap keep its colour.
+ * NOTE: `filter` is applied per-tile, not to the pane. Per-pane filters
+ * force the GPU to re-rasterize the entire pane on every transform during
+ * zoom animation; per-tile filters are baked once into each cached tile.
+ * Same visual result, dramatically smoother zoom. */
+.leaflet-tile-pane .leaflet-tile {
+  filter: grayscale(1) brightness(1.05) contrast(0.92);
+}
+/* Same trick for the heatmap pane: apply blur per-tile so each tile is
+ * rasterized with its blur once and then GPU-transformed cheaply. */
+.leaflet-pane.fit-pane {
+  opacity: 0.78;
+  pointer-events: none;
+}
+.leaflet-pane.fit-pane .leaflet-tile {
+  /* 2px per-tile blur. Enough to erase stride quantization without
+     smudging the gaussian's own peaks. Per-tile (not pane-wide) so each
+     tile rasterizes its blur once and GPU-transforms cheaply. */
+  filter: blur(2px) saturate(1.15);
+}
+
+.leaflet-control-attribution {
+  font-family: 'JetBrains Mono', monospace !important;
+  font-size: 9px !important;
+  background: rgba(255, 255, 255, 0.85) !important;
+  backdrop-filter: blur(8px);
+  color: var(--muted) !important;
+  border-radius: var(--r-sm) !important;
+  padding: 3px 8px !important;
+  margin: 8px !important;
+}
+/* +/- zoom control — glass pill at bottom-right, matches top-suburbs /
+   attribution aesthetic. Sits above the attribution with extra bottom
+   margin so the two never visually collide. */
+.leaflet-control-zoom {
+  border: 1px solid rgba(255, 255, 255, 0.7) !important;
+  box-shadow: 0 4px 14px rgba(10, 10, 10, 0.1),
+              0 1px 3px rgba(10, 10, 10, 0.06) !important;
+  border-radius: var(--r-md) !important;
+  overflow: hidden;
+  margin: 0 20px 36px 0 !important;    /* bottom-right with attribution clearance */
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  background: rgba(255, 255, 255, 0.68);
+}
+.leaflet-control-zoom a {
+  background: transparent !important;
+  color: var(--fg) !important;
+  border: none !important;
+  border-bottom: 1px solid rgba(10, 10, 10, 0.06) !important;
+  font-family: 'Space Grotesk', sans-serif !important;
+  font-weight: 500 !important;
+  width: 34px !important;
+  height: 34px !important;
+  line-height: 34px !important;
+  font-size: 17px !important;
+  transition: background 0.16s var(--ease), color 0.16s var(--ease) !important;
+}
+.leaflet-control-zoom a:last-child { border-bottom: none !important; }
+.leaflet-control-zoom a:hover {
+  background: var(--fg) !important;
+  color: var(--surface) !important;
+}
+.leaflet-control-zoom a:active {
+  transform: translateY(0.5px);
+}
+
+.suburb-label-marker { background: transparent !important; border: none !important; }
+.suburb-label-text {
+  display: inline-block;
+  background: rgba(255,255,255,0.9);
+  backdrop-filter: blur(6px);
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--fg);
+  border: 1px solid var(--line);
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: var(--shadow-sm);
+}
+
+/* Suburb polygon overlay — invisible at rest, dark glass on hover */
+.leaflet-pane.polygon-pane { z-index: 300; }
+.suburb-polygon { cursor: pointer; transition: fill-opacity 0.2s var(--ease), stroke-opacity 0.2s var(--ease); }
+.suburb-hover-name {
+  position: absolute;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 500;
+  background: rgba(10, 10, 10, 0.86);
+  backdrop-filter: blur(14px) saturate(140%);
+  -webkit-backdrop-filter: blur(14px) saturate(140%);
+  color: #fff;
+  padding: 10px 20px;
+  border-radius: 999px;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 13px;
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  border: 1px solid rgba(255,255,255,0.1);
+  box-shadow: 0 8px 24px rgba(10,10,10,0.18);
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.18s var(--ease);
+}
+.suburb-hover-name.show { opacity: 1; }
+.suburb-hover-name .score {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 700;
+  margin-left: 10px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(255,255,255,0.12);
+}
+
+/* ---------- Map overlays ---------- */
+.map-overlay {
+  position: absolute;
+  top: 20px; left: 20px;
+  z-index: 500;
+  display: flex; flex-direction: column; gap: 12px;
+  pointer-events: none;
+  max-width: 340px;
+}
+.overlay-card {
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  padding: 18px 22px;
+  border-radius: var(--r-lg);
+  pointer-events: auto;
+  box-shadow: var(--shadow-lg);
+  animation: fadeSlideIn 0.6s var(--ease) backwards;
+}
+@keyframes fadeSlideIn {
+  from { opacity: 0; transform: translateY(-8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+.overlay-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.overlay-main {
+  font-size: 16.5px;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  line-height: 1.4;
+}
+.overlay-main strong {
+  background: var(--fg);
+  color: var(--surface);
+  padding: 2px 8px;
+  border-radius: var(--r-sm);
+  font-weight: 600;
+}
+
+.legend {
+  position: absolute;
+  bottom: 20px; left: 20px;
+  z-index: 500;
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  padding: 14px 18px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-md);
+}
+.legend-title { color: var(--muted); margin-bottom: 10px; }
+.legend-bar {
+  width: 200px; height: 8px;
+  background: linear-gradient(to right,
+    #b91c1c 0%,
+    #ef4444 18%,
+    #e2a08c 40%,
+    #bec1c7 50%,
+    #a5d2af 60%,
+    #22c55e 82%,
+    #15803d 100%);
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+.legend-labels {
+  display: flex;
+  justify-content: space-between;
+  color: var(--muted);
+  font-size: 9px;
+}
+
+/* --- Heatmap toggle + explainer, stacked under the fit-score gradient --- */
+.legend-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  cursor: pointer;
+  user-select: none;
+}
+.legend-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+}
+.legend-switch {
+  position: relative;
+  flex-shrink: 0;
+  width: 28px;
+  height: 16px;
+  border-radius: 999px;
+  background: var(--line);
+  transition: background 0.18s var(--ease);
+}
+.legend-switch-thumb {
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+  transition: transform 0.18s var(--ease);
+}
+.legend-toggle input:checked + .legend-switch {
+  background: #22c55e;
+}
+.legend-toggle input:checked + .legend-switch .legend-switch-thumb {
+  transform: translateX(12px);
+}
+.legend-toggle-label {
+  color: var(--fg);
+  font-size: 10px;
+  letter-spacing: 0.08em;
+}
+.legend-explainer {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+  max-width: 220px;
+}
+.legend-explainer-title {
+  color: var(--muted);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  margin-bottom: 6px;
+}
+.legend-explainer p {
+  font-family: 'Inter', -apple-system, sans-serif;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--fg);
+  font-size: 11px;
+  line-height: 1.45;
+  margin: 0;
+}
+
+/* ============================================================
+   POI filter chip bar + POI markers — the main map feature
+   ============================================================ */
+.poi-filter-wrap {
+  position: absolute;
+  bottom: 20px; left: 260px;
+  z-index: 500;
+  max-width: calc(100% - 300px);
+}
+.poi-filter-title {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  margin-bottom: 6px;
+  padding-left: 2px;
+}
+.poi-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-width: 100%;
+}
+.poi-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 8px;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(12px) saturate(180%);
+  -webkit-backdrop-filter: blur(12px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  border-radius: 999px;
+  font-family: 'Inter', -apple-system, sans-serif;
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--fg);
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(10, 10, 10, 0.12);
+  transition: all 0.12s var(--ease);
+  opacity: 0.45;
+}
+.poi-chip:hover { transform: translateY(-1px); opacity: 1; box-shadow: 0 3px 8px rgba(10, 10, 10, 0.18); }
+.poi-chip.on   {
+  opacity: 1;
+  border-color: var(--chip-color);
+  box-shadow: 0 2px 6px rgba(10, 10, 10, 0.14), inset 0 0 0 1px var(--chip-color);
+}
+.poi-chip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 0;
+  color: var(--chip-color);
+  flex-shrink: 0;
+}
+.poi-chip:not(.on) .poi-chip-icon { color: var(--muted); opacity: 0.85; }
+.poi-chip-label { letter-spacing: -0.01em; }
+.poi-chip-count {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  color: var(--muted);
+  padding-left: 4px;
+  border-left: 1px solid var(--line-soft);
+  margin-left: 2px;
+}
+.poi-chip:not(.on) .poi-chip-count { color: var(--muted); }
+
+/* ----- POI markers (professional SVG icon mode) --------------------- */
+.poi-pin {
+  background: transparent !important;
+  border: none !important;
+}
+/* Light-theme marker — sits on the off-white CARTO basemap as a small
+   white disc with a coloured border matching its category. The coloured
+   SVG glyph draws in the same category colour via currentColor, so the
+   marker reads as a clean "coloured-outline chip" instead of the older
+   dark-glass pill. The whole div fills its iconSize box (24px at rest,
+   30px when its suburb is focused) so we don't hardcode dimensions. */
+.poi-icon {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%; height: 100%;
+  border-radius: 50%;
+  /* Near-white fill so the coloured glyph + border carry the identity.
+     Slightly off-white (vs pure #fff) keeps it from blowing out on the
+     CARTO basemap and stops it looking like an empty hole. */
+  background: #ffffff;
+  color: var(--poi-color, #1f2937);    /* drives SVG stroke via currentColor */
+  border: 1.25px solid var(--poi-color, rgba(15, 23, 42, 0.35));
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.14),
+              0 2px 6px rgba(15, 23, 42, 0.10);
+  cursor: pointer;
+  opacity: 0.98;
+  /* Promote to its own compositor layer so transform+opacity transitions
+     don't trigger paint. */
+  will-change: transform;
+  transition: transform 0.14s var(--ease), box-shadow 0.14s var(--ease),
+              background 0.14s var(--ease), opacity 0.14s var(--ease),
+              border-color 0.14s var(--ease);
+}
+.poi-icon-glyph {
+  display: inline-flex;
+  line-height: 0;
+  pointer-events: none;
+  /* No drop-shadow on light theme — the coloured border supplies the
+     edge contrast and a shadow on the glyph reads as muddy. */
+}
+.poi-icon:hover {
+  transform: scale(1.24);
+  background: #ffffff;
+  border-color: var(--poi-color, rgba(15, 23, 42, 0.6));
+  opacity: 1;
+  box-shadow: 0 4px 10px rgba(15, 23, 42, 0.18),
+              0 0 0 2px rgba(var(--poi-rgb, 15 23 42), 0.12);
+  z-index: 10000;
+}
+/* Focused state — this marker belongs to the suburb whose drawer is open.
+   Slightly heavier coloured border + soft coloured glow pin it as "the
+   active set" against the rest of the map without turning into a shouter. */
+.poi-icon.in-focus {
+  opacity: 1;
+  background: #ffffff;
+  border-color: var(--poi-color, rgba(15, 23, 42, 0.55));
+  border-width: 1.75px;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.16),
+              0 0 0 2px rgba(var(--poi-rgb, 15 23 42), 0.18);
+}
+.poi-icon.in-focus:hover { transform: scale(1.24); }
+/* Preferred — only ever applied inside `.in-focus`. Warm gold ring tells
+   the user "this one matches your quiz" without a loud star corner. */
+.poi-icon.in-focus.preferred {
+  border-color: rgba(217, 119, 6, 0.95);
+  box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.42),
+              0 2px 6px rgba(146, 64, 14, 0.22);
+}
+
+/* ----- POI tooltip styling ------------------------------------------- */
+.leaflet-tooltip.poi-tooltip {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 8px 11px;
+  font-family: 'Inter', -apple-system, sans-serif;
+  font-size: 12px;
+  color: var(--fg);
+  box-shadow: var(--shadow-md);
+  max-width: 240px;
+  white-space: normal;
+  line-height: 1.35;
+}
+.leaflet-tooltip.poi-tooltip::before { display: none; }
+.leaflet-tooltip.poi-tooltip .tt-title {
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-bottom: 2px;
+}
+.leaflet-tooltip.poi-tooltip .tt-meta {
+  color: var(--muted);
+  font-size: 11px;
+}
+.leaflet-tooltip.poi-tooltip .tt-star {
+  color: #b45309;
+  font-size: 10.5px;
+  font-weight: 600;
+  margin-top: 4px;
+  letter-spacing: 0.01em;
+}
+.top-suburbs {
+  position: absolute;
+  top: 20px; right: 20px;
+  z-index: 500;
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid rgba(255, 255, 255, 0.7);
+  width: 290px;
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-lg);
+  overflow: hidden;
+  transition: all 0.4s var(--ease);
+}
+.drawer-open .top-suburbs { opacity: 0; transform: translateX(20px); pointer-events: none; }
+.ts-header {
+  padding: 12px 14px 12px 18px;
+  border-bottom: 1px solid var(--line-soft);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.2s var(--ease);
+}
+.ts-header:hover { background: rgba(10,10,10,0.03); }
+.ts-header-left { display: flex; align-items: center; gap: 8px; flex: 1; }
+.ts-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px; height: 20px;
+  border-radius: 6px;
+  background: var(--line-soft);
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 600;
+  transition: transform 0.3s var(--ease), background 0.2s var(--ease);
+}
+.ts-header:hover .ts-caret { background: var(--fg); color: var(--surface); }
+.top-suburbs.collapsed .ts-caret { transform: rotate(-90deg); }
+.top-suburbs.collapsed .ts-header { border-bottom-color: transparent; }
+
+/* Collapse the floating panel horizontally too when the body is hidden,
+   so the map actually feels bigger instead of just emptier. */
+.top-suburbs.collapsed { width: auto; min-width: 0; }
+.top-suburbs.collapsed .ts-header { padding: 10px 14px; }
+.top-suburbs.collapsed .ts-header > span:last-child { display: none; }
+.ts-body {
+  max-height: 720px;
+  overflow: hidden;
+  transition: max-height 0.4s var(--ease), opacity 0.25s var(--ease);
+}
+.top-suburbs.collapsed .ts-body {
+  max-height: 0;
+  opacity: 0;
+}
+.ts-item {
+  padding: 12px 18px;
+  border-bottom: 1px solid var(--line-soft);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+  position: relative;
+}
+.ts-item::before {
+  content: "";
+  position: absolute;
+  left: 0; top: 0; bottom: 0;
+  width: 3px;
+  background: transparent;
+  transition: background 0.2s var(--ease);
+}
+.ts-item:last-child { border: none; }
+.ts-item:hover {
+  background: rgba(10,10,10,0.04);
+  transform: translateX(2px);
+}
+.ts-item:hover::before { background: var(--fg); }
+.ts-item .rank {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: var(--muted);
+  width: 22px;
+}
+.ts-item .name { flex: 1; font-size: 13px; font-weight: 500; }
+.ts-item .score {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  background: var(--fg);
+  color: var(--surface);
+}
+.ts-item .score.over {
+  background: var(--muted-2);
+}
+.ts-item .rent {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-right: 8px;
+}
+
+/* ---------- Drawer ---------- */
+/* Width and visibility are driven by the parent `.app` grid — when the
+   `drawer-open` class is removed the drawer's column collapses to 0 and
+   this element is clipped to nothing. No translate-off-screen needed. */
+.drawer {
+  grid-area: drawer;
+  border-left: 1px solid transparent;
+  background: var(--surface);
+  overflow: hidden;          /* default: clip while column collapses  */
+  transition: border-color 0.42s var(--ease),
+              box-shadow    0.42s var(--ease);
+  position: relative;
+  box-shadow: none;
+  min-width: 0;              /* lets the column actually shrink to 0  */
+}
+.app.drawer-open .drawer {
+  overflow-y: auto;
+  border-left-color: var(--line);
+  box-shadow: -8px 0 24px rgba(15, 23, 42, 0.04);
+}
+/* Legacy class kept for `.drawer.open` selectors elsewhere — the real
+   state now lives on `.app.drawer-open`. */
+.drawer.open { /* no-op, grid handles it */ }
+.drawer::-webkit-scrollbar { width: 8px; }
+.drawer::-webkit-scrollbar-track { background: transparent; }
+.drawer::-webkit-scrollbar-thumb { background: var(--line); border-radius: 4px; }
+
+.drawer-inner { padding: 32px 32px 80px; }
+
+.drawer-close {
+  position: absolute;
+  top: 20px; right: 20px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  width: 36px; height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 300;
+  color: var(--muted);
+  border-radius: 50%;
+  transition: all 0.25s var(--ease);
+  z-index: 10;
+}
+.drawer-close:hover {
+  background: var(--fg);
+  color: var(--surface);
+  border-color: var(--fg);
+  transform: rotate(90deg);
+}
+
+.d-name {
+  font-size: 42px;
+  font-weight: 500;
+  letter-spacing: -0.035em;
+  line-height: 1;
+  margin-bottom: 8px;
+}
+.d-tagline {
+  font-size: 13px;
+  color: var(--muted);
+  font-style: italic;
+  margin-bottom: 24px;
+}
+
+.d-score-block {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+.d-score-cell {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  padding: 16px 18px;
+  border-radius: var(--r-lg);
+  position: relative;
+  overflow: hidden;
+}
+.d-score-cell.emphasis {
+  background: var(--fg);
+  border-color: var(--fg);
+}
+.d-score-cell .label {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.d-score-cell.emphasis .label { color: rgba(255,255,255,0.6); }
+.d-score-cell .val {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.025em;
+  font-family: 'JetBrains Mono', monospace;
+  line-height: 1;
+}
+.d-score-cell.emphasis .val { color: var(--surface); }
+.d-score-cell .val-sub {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 4px;
+  font-family: 'JetBrains Mono', monospace;
+}
+.d-score-cell.emphasis .val-sub { color: rgba(255,255,255,0.6); }
+
+/* ---- AI persona card (sidebar) ----------------------------------------
+   Light theme to match the rest of the UI. Uses the existing surface +
+   border tokens, with a thin green accent strip on the left (the only
+   chromatic cue that this is the AI-generated block).
+------------------------------------------------------------------------ */
+.persona-card {
+  background: var(--surface);
+  color: var(--fg);
+  padding: 16px 16px 18px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--green-soft);
+  border-radius: var(--r-md);
+  margin-bottom: 22px;
+  position: relative;
+  transition: opacity 0.35s var(--ease);
+  box-shadow: var(--shadow-sm);
+}
+.persona-card.loading { opacity: 0.55; }
+.persona-kicker {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.persona-kicker .dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--green-soft);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+}
+.persona-kicker.template .dot {
+  background: var(--muted-2);
+  box-shadow: none;
+}
+.persona-headline {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  margin-bottom: 8px;
+  color: var(--fg);
+}
+.persona-summary {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--fg);
+  margin-bottom: 12px;
+}
+.persona-wants {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.persona-wants li {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+  padding-left: 16px;
+  position: relative;
+}
+.persona-wants li::before {
+  content: "→";
+  position: absolute;
+  left: 0; top: 0;
+  color: var(--green);
+  font-weight: 700;
+  font-size: 11px;
+}
+
+/* ---- AI suburb block inside the drawer --------------------------------
+   Same family as the persona card — soft surface, thin green left rail,
+   subtle shadow. Sits as a featured callout above the data sections.
+------------------------------------------------------------------------ */
+.ai-block {
+  background: var(--surface);
+  color: var(--fg);
+  padding: 18px 20px 20px;
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--green-soft);
+  border-radius: var(--r-md);
+  margin-bottom: 26px;
+  position: relative;
+  box-shadow: var(--shadow-sm);
+}
+.ai-kicker {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.ai-kicker .dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--green-soft);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+}
+.ai-kicker.template .dot {
+  background: var(--muted-2);
+  box-shadow: none;
+}
+.ai-headline {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 19px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+  margin-bottom: 10px;
+  color: var(--fg);
+}
+.ai-summary {
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: var(--fg);
+  margin-bottom: 14px;
+}
+.ai-bullets {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.ai-bullets li {
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--muted);
+  padding-left: 18px;
+  position: relative;
+}
+.ai-bullets li.pos {
+  color: var(--fg);
+}
+.ai-bullets li.pos::before {
+  content: "+";
+  position: absolute;
+  left: 0; top: 0;
+  color: var(--green);
+  font-weight: 700;
+}
+.ai-bullets li.neg::before {
+  content: "−";
+  position: absolute;
+  left: 0; top: 0;
+  color: var(--red);
+  font-weight: 700;
+}
+.ai-bullets + .ai-bullets { margin-top: 6px; }
+
+/* Quick facts chips ("what's actually here") */
+.evidence-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.evidence-chip {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  padding: 4px 9px;
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted-2);
+  white-space: nowrap;
+}
+.evidence-chip strong {
+  color: var(--fg);
+  font-weight: 700;
+  margin-right: 3px;
+}
+
+.d-section { margin-bottom: 28px; }
+.d-section h3 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  margin-bottom: 14px;
+  font-weight: 500;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.d-section h3::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--line);
+}
+
+.dim-bars { display: flex; flex-direction: column; gap: 10px; }
+.dim-row { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.dim-name {
+  flex: 0 0 110px;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+.dim-track {
+  flex: 1;
+  height: 7px;
+  background: var(--line);
+  border-radius: 999px;
+  overflow: hidden;
+  position: relative;
+}
+.dim-user-marker {
+  position: absolute;
+  top: -2px;
+  width: 2px;
+  height: 11px;
+  background: var(--fg);
+  border-radius: 1px;
+  z-index: 2;
+}
+.dim-fill {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  transition: width 0.5s var(--ease);
+}
+.dim-val {
+  flex: 0 0 30px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  text-align: right;
+  font-weight: 600;
+}
+
+.fact-list { list-style: none; }
+.fact-list li {
+  padding: 12px 14px;
+  margin-bottom: 6px;
+  font-size: 13px;
+  line-height: 1.5;
+  display: flex;
+  gap: 12px;
+  border-radius: var(--r-md);
+  transition: all 0.2s var(--ease);
+  background: var(--line-soft);
+  border-left: 3px solid var(--line);
+}
+.fact-list li.pos { border-left-color: var(--fg); }
+.fact-list li.neg { border-left-color: var(--muted-2); }
+.fact-list .mark {
+  font-weight: 700;
+  flex-shrink: 0;
+  width: 18px; height: 18px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  margin-top: 1px;
+}
+.fact-list li.pos .mark { background: var(--fg); color: var(--surface); }
+.fact-list li.neg .mark { background: var(--muted-2); color: var(--surface); }
+.fact-list .empty {
+  padding: 14px;
+  border-radius: var(--r-md);
+  background: var(--line-soft);
+  color: var(--muted);
+  font-size: 12.5px;
+  text-align: center;
+  font-style: italic;
+  border: 1px dashed var(--line);
+}
+
+.listings-list { display: flex; flex-direction: column; gap: 10px; }
+.listing-card {
+  border: 1px solid var(--line);
+  padding: 14px 16px;
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  transition: all 0.3s var(--ease);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  text-decoration: none;
+  color: var(--fg);
+}
+.listing-card:hover {
+  border-color: var(--fg);
+  box-shadow: var(--shadow-md);
+  transform: translateY(-1px);
+}
+.listing-left { flex: 1; min-width: 0; }
+.listing-addr {
+  font-size: 13px;
+  font-weight: 500;
+  margin-bottom: 4px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.listing-meta {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-family: 'JetBrains Mono', monospace;
+}
+.listing-price {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--fg);
+  white-space: nowrap;
+}
+
+/* ---------- Quiz overlay ---------- */
+.quiz-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: radial-gradient(circle at 30% 20%, #fdfdfc, #ebeef2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.6s var(--ease);
+  padding: 40px 20px;
+  overflow-y: auto;
+}
+.quiz-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.quiz-shell {
+  width: 100%;
+  max-width: 720px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow-lg);
+  padding: 40px 44px 36px;
+  position: relative;
+}
+.quiz-progress-bar {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 3px;
+  background: var(--line-soft);
+  border-radius: 18px 18px 0 0;
+  overflow: hidden;
+}
+.quiz-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--fg);
+  transition: width 0.4s var(--ease);
+}
+.quiz-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 24px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+.quiz-top .brand { font-weight: 600; color: var(--fg); letter-spacing: 0.18em; }
+.quiz-step {
+  font-size: 10px;
+}
+.quiz-question {
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
+  margin-bottom: 28px;
+}
+.quiz-answers {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 28px;
+}
+/* If the last answer would orphan on its own row, span both columns so it
+   fills cleanly. Applies to questions with an odd number of answers. */
+.quiz-answers > .quiz-answer:nth-last-child(1):nth-child(odd) {
+  grid-column: span 2;
+}
+@media (max-width: 640px) {
+  .quiz-answers { grid-template-columns: 1fr; }
+  .quiz-answers > .quiz-answer:nth-last-child(1):nth-child(odd) {
+    grid-column: auto;
+  }
+  .quiz-shell { padding: 32px 24px; }
+}
+.quiz-answer {
+  padding: 18px 20px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  text-align: left;
+  color: var(--fg);
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+}
+.quiz-answer:hover {
+  border-color: var(--fg);
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-md);
+}
+.quiz-answer.selected {
+  border-color: var(--fg);
+  background: var(--fg);
+  color: var(--surface);
+}
+.quiz-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.quiz-back {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  padding: 8px 0;
+  transition: color 0.2s var(--ease);
+}
+.quiz-back:hover { color: var(--fg); }
+.quiz-back:disabled { opacity: 0.3; cursor: default; }
+
+.quiz-cta {
+  padding: 12px 22px;
+  background: var(--fg);
+  color: var(--surface);
+  border: none;
+  border-radius: 999px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+}
+.quiz-cta:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+.quiz-cta:disabled {
+  background: var(--muted-2);
+  cursor: default;
+}
+
+.quiz-budget-wrap { margin-bottom: 28px; }
+.quiz-budget-label {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 14px;
+  font-size: 14px;
+  font-weight: 500;
+}
+.quiz-budget-label .val {
+  font-family: 'JetBrains Mono', monospace;
+  background: var(--fg);
+  color: var(--surface);
+  padding: 4px 12px;
+  border-radius: 999px;
+  font-size: 13px;
+}
+
+.quiz-error {
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  padding: 14px 16px;
+  border-radius: var(--r-md);
+  font-size: 13px;
+  margin-top: 12px;
+  display: none;
+}
+.quiz-error.show { display: block; }
+
+.quiz-loading {
+  text-align: center;
+  padding: 40px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+.quiz-loading .spinner {
+  display: inline-block;
+  width: 16px; height: 16px;
+  border: 2px solid var(--line);
+  border-top-color: var(--fg);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+  margin-right: 10px;
+  vertical-align: middle;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ============================================================
+   Listing price pins + hover preview + detail modal
+   Realestate.com-style map markers sitting on top of the heatmap.
+   ============================================================ */
+.listing-pin-wrap {
+  background: transparent !important;
+  border: none !important;
+}
+.listing-pin {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  background: var(--surface);
+  color: var(--fg);
+  border: 1.5px solid var(--fg);
+  border-radius: 999px;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  box-shadow: 0 2px 6px rgba(10, 10, 10, 0.18);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 0.12s var(--ease), box-shadow 0.12s var(--ease),
+              background 0.12s var(--ease), color 0.12s var(--ease);
+  pointer-events: auto;
+  transform-origin: center bottom;
+  /* Triangle pointer below the pill */
+  position: relative;
+}
+.listing-pin::after {
+  content: '';
+  position: absolute;
+  left: 50%; top: 100%;
+  transform: translateX(-50%);
+  width: 0; height: 0;
+  border-left: 5px solid transparent;
+  border-right: 5px solid transparent;
+  border-top: 6px solid var(--fg);
+  filter: drop-shadow(0 1px 1px rgba(10,10,10,0.1));
+}
+.listing-pin:hover {
+  background: var(--fg);
+  color: var(--surface);
+  transform: translateY(-2px) scale(1.04);
+  box-shadow: 0 6px 14px rgba(10, 10, 10, 0.28);
+  z-index: 10000;
+}
+.listing-pin:hover::after { border-top-color: var(--fg); }
+.listing-pin .pin-price { font-variant-numeric: tabular-nums; }
+.listing-pin .pin-beds {
+  font-size: 10.5px;
+  font-weight: 600;
+  opacity: 0.72;
+  padding-left: 5px;
+  border-left: 1px solid rgba(10,10,10,0.18);
+}
+.listing-pin:hover .pin-beds {
+  opacity: 0.82;
+  border-left-color: rgba(255,255,255,0.22);
+}
+
+/* ----- Aggregate pin (one per suburb, low-zoom collapsed view) -------- */
+.listing-pin-aggregate {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px 3px 7px;
+  background: rgba(255, 255, 255, 0.94);
+  color: var(--fg);
+  border: 1px solid rgba(10, 10, 10, 0.55);
+  border-radius: 999px;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: -0.005em;
+  box-shadow: 0 1px 4px rgba(10, 10, 10, 0.18);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: transform 0.12s var(--ease), box-shadow 0.12s var(--ease),
+              background 0.12s var(--ease), color 0.12s var(--ease);
+  pointer-events: auto;
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+.listing-pin-aggregate .agg-price {
+  font-variant-numeric: tabular-nums;
+}
+.listing-pin-aggregate .agg-count {
+  font-size: 9.5px;
+  font-weight: 600;
+  opacity: 0.55;
+  font-family: 'JetBrains Mono', monospace;
+  padding-left: 4px;
+  border-left: 1px solid rgba(10, 10, 10, 0.18);
+}
+.listing-pin-aggregate:hover {
+  background: var(--fg);
+  color: var(--surface);
+  transform: translateY(-1px) scale(1.05);
+  box-shadow: 0 4px 10px rgba(10, 10, 10, 0.26);
+  z-index: 10000;
+}
+.listing-pin-aggregate:hover .agg-count {
+  opacity: 0.75;
+  border-left-color: rgba(255, 255, 255, 0.22);
+}
+
+/* ----- Dot pin (one per suburb, very-low-zoom "bird's eye" view) ------ */
+.listing-pin-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  /* Dark glass — translucent dark fill + backdrop blur. Safe perf-wise
+     because these dots only render at low zoom (bird's-eye view) and
+     POI markers are hidden at that zoom level, so we're never stacking
+     many blurred layers at once. */
+  background: rgba(18, 18, 22, 0.62);
+  backdrop-filter: blur(6px) saturate(160%);
+  -webkit-backdrop-filter: blur(6px) saturate(160%);
+  border: 1.5px solid rgba(255, 255, 255, 0.55);
+  box-shadow: 0 1px 3px rgba(10, 10, 10, 0.28),
+              inset 0 0 0 0.5px rgba(255, 255, 255, 0.18);
+  cursor: pointer;
+  transition: transform 0.12s var(--ease), box-shadow 0.12s var(--ease),
+              background 0.12s var(--ease), border-color 0.12s var(--ease);
+  pointer-events: auto;
+}
+.listing-pin-dot:hover {
+  transform: scale(1.45);
+  background: rgba(10, 10, 12, 0.78);
+  border-color: rgba(255, 255, 255, 0.85);
+  box-shadow: 0 3px 8px rgba(10, 10, 10, 0.4),
+              inset 0 0 0 0.5px rgba(255, 255, 255, 0.24);
+  z-index: 10000;
+}
+
+/* ----- Hover preview (Leaflet tooltip styled as a realestate card) ---- */
+.leaflet-tooltip.listing-preview {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  padding: 0;
+  box-shadow: var(--shadow-lg);
+  width: 260px;
+  max-width: 260px;
+  white-space: normal;
+  color: var(--fg);
+  font-family: 'Inter', -apple-system, sans-serif;
+  overflow: hidden;
+  opacity: 1;
+}
+.leaflet-tooltip.listing-preview::before { display: none; }
+.listing-preview-img {
+  width: 100%;
+  height: 140px;
+  background: var(--line-soft) center/cover no-repeat;
+  display: block;
+}
+.listing-preview-body { padding: 12px 14px 14px; }
+.listing-preview-price {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.015em;
+  color: var(--fg);
+  margin-bottom: 4px;
+}
+.listing-preview-addr {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+  margin-bottom: 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.listing-preview-meta {
+  display: flex;
+  gap: 10px;
+  font-size: 11px;
+  color: var(--muted);
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.02em;
+}
+.listing-preview-meta span { display: inline-flex; align-items: center; gap: 3px; }
+.listing-preview-cta {
+  margin-top: 10px;
+  font-size: 10.5px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-family: 'JetBrains Mono', monospace;
+}
+
+/* ----- Full detail modal ---- */
+.listing-modal-overlay {
+  position: fixed; inset: 0;
+  background: rgba(10, 10, 10, 0.52);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 10001;
+  opacity: 0; pointer-events: none;
+  transition: opacity 0.22s var(--ease);
+}
+.listing-modal-overlay.open {
+  opacity: 1; pointer-events: auto;
+}
+.listing-modal {
+  background: var(--surface);
+  border-radius: var(--r-lg);
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 64px);
+  box-shadow: 0 40px 80px rgba(10, 10, 10, 0.28), 0 8px 24px rgba(10,10,10,0.12);
+  display: flex; flex-direction: column;
+  overflow: hidden;
+  transform: translateY(8px) scale(0.98);
+  transition: transform 0.22s var(--ease);
+}
+.listing-modal-overlay.open .listing-modal { transform: translateY(0) scale(1); }
+
+.listing-modal-img {
+  width: 100%; height: 260px;
+  background: var(--line-soft) center/cover no-repeat;
+  position: relative;
+}
+.listing-modal-close {
+  position: absolute; top: 12px; right: 12px;
+  width: 32px; height: 32px; border-radius: 50%;
+  background: rgba(255,255,255,0.95);
+  border: none;
+  color: var(--fg);
+  font-size: 18px; line-height: 1;
+  cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: var(--shadow-md);
+  transition: transform 0.15s var(--ease), background 0.15s var(--ease);
+}
+.listing-modal-close:hover {
+  background: var(--fg); color: var(--surface);
+  transform: scale(1.06);
+}
+
+.listing-modal-body {
+  padding: 22px 26px 26px;
+  overflow-y: auto;
+}
+.listing-modal-price {
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 2px;
+}
+.listing-modal-price .unit {
+  font-size: 14px; font-weight: 500;
+  color: var(--muted); margin-left: 4px;
+}
+.listing-modal-addr {
+  font-size: 14px; color: var(--muted);
+  margin-bottom: 16px; line-height: 1.4;
+}
+.listing-modal-chips {
+  display: flex; gap: 8px;
+  margin-bottom: 18px;
+  flex-wrap: wrap;
+}
+.listing-modal-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 6px 11px;
+  background: var(--line-soft);
+  border-radius: 999px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg);
+  letter-spacing: 0.02em;
+}
+.listing-modal-chip .ico {
+  width: 12px; height: 12px;
+  display: inline-flex; align-items: center; justify-content: center;
+  opacity: 0.7;
+}
+.listing-modal-headline {
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--fg);
+  letter-spacing: -0.01em;
+  margin-bottom: 10px;
+  line-height: 1.3;
+}
+.listing-modal-desc {
+  font-size: 13.5px;
+  line-height: 1.55;
+  color: var(--fg);
+  opacity: 0.82;
+  margin-bottom: 22px;
+}
+.listing-modal-cta {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 100%;
+  padding: 14px 20px;
+  background: var(--fg);
+  color: var(--surface);
+  border: none;
+  border-radius: 10px;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+  text-decoration: none;
+  transition: transform 0.15s var(--ease), box-shadow 0.15s var(--ease);
+  gap: 6px;
+}
+.listing-modal-cta:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 18px rgba(10,10,10,0.22);
+}
+.listing-modal-cta .arrow { transition: transform 0.15s var(--ease); }
+.listing-modal-cta:hover .arrow { transform: translateX(3px); }
+.listing-modal-footnote {
+  margin-top: 12px;
+  font-size: 10.5px;
+  color: var(--muted-2);
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  text-align: center;
+}
+
+/* ----- Listings toggle (sidebar) ---- */
+.listings-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  margin-top: 6px;
+  cursor: pointer;
+  transition: border-color 0.15s var(--ease), background 0.15s var(--ease);
+}
+.listings-toggle:hover { border-color: var(--fg); }
+.listings-toggle-label {
+  display: flex; flex-direction: column; gap: 2px;
+  text-align: left;
+}
+.listings-toggle-label .t {
+  font-size: 12px; font-weight: 600; color: var(--fg);
+  letter-spacing: -0.005em;
+}
+.listings-toggle-label .s {
+  font-size: 10.5px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+/* iOS-style switch */
+.listings-switch {
+  width: 36px; height: 20px;
+  background: var(--line);
+  border-radius: 999px;
+  position: relative;
+  transition: background 0.18s var(--ease);
+  flex-shrink: 0;
+}
+.listings-switch::after {
+  content: '';
+  position: absolute;
+  top: 2px; left: 2px;
+  width: 16px; height: 16px;
+  background: var(--surface);
+  border-radius: 50%;
+  box-shadow: 0 1px 2px rgba(10,10,10,0.18);
+  transition: transform 0.18s var(--ease);
+}
+.listings-toggle.on .listings-switch { background: var(--fg); }
+.listings-toggle.on .listings-switch::after { transform: translateX(16px); }
+
+/* ---------- Responsive ---------- */
+@media (max-width: 1200px) {
+  .app { grid-template-columns: 300px 1fr 400px; }
+}
+</style>
+</head>
+
+<body>
+
+<!-- ============== QUIZ OVERLAY ============== -->
+<div class="quiz-overlay" id="quizOverlay">
+  <div class="quiz-shell">
+    <div class="quiz-progress-bar"><div class="quiz-progress-fill" id="quizProgress"></div></div>
+    <div class="quiz-top">
+      <span class="brand">ORBIT</span>
+      <span class="quiz-step" id="quizStep">Step 1 / 8</span>
+    </div>
+    <div id="quizBody">
+      <div class="quiz-loading"><span class="spinner"></span>Loading your quiz…</div>
+    </div>
+  </div>
+</div>
+
+<!-- ============== APP ============== -->
+<div class="app" id="app">
+  <header>
+    <div class="logo">
+      <div class="logo-mark"></div>
+      ORBIT
+    </div>
+    <div class="header-meta">
+      <span class="pill">Sydney, NSW</span>
+      <span class="pill live">Data Live · 2026-Q1</span>
+      <span class="pill" id="pill-pois">45 suburbs</span>
+    </div>
+  </header>
+
+  <aside class="profile">
+    <h1>Your Sydney.</h1>
+    <p class="subhead">A map drawn around who you are — green for fit, red for avoid.</p>
+
+    <div class="persona-card loading" id="personaCard" style="display:none;">
+      <div class="persona-kicker" id="personaKicker"><span class="dot"></span>AI persona</div>
+      <div class="persona-headline" id="personaHeadline">Reading your taste…</div>
+      <div class="persona-summary" id="personaSummary"></div>
+      <ul class="persona-wants" id="personaWants"></ul>
+    </div>
+
+    <div class="section-label">Your taste vector</div>
+    <div class="taste-bars" id="tasteBars">
+      <!-- Populated after quiz -->
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="section-label">Budget</div>
+    <div class="input-group">
+      <div class="input-label">
+        <span>Weekly 2BR rent</span>
+        <span class="value" id="budget-val">$700</span>
+      </div>
+      <input type="range" min="300" max="2000" value="700" step="10" id="budget" oninput="onBudgetSlider(this.value)">
+      <div class="slider-labels"><span>$300</span><span>$2000</span></div>
+      <div class="budget-manual">
+        <label for="budgetInput">Set exactly</label>
+        <span class="prefix">
+          <span>$</span>
+          <input type="number" id="budgetInput" min="100" max="5000" step="10" value="700"
+                 oninput="onBudgetTyped(this.value)">
+        </span>
+        <span class="unit">/week</span>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="section-label">Your fit — live</div>
+    <div class="meta-stat">
+      <span class="label">Suburbs in budget</span>
+      <span class="num" id="in-budget">—</span>
+    </div>
+    <div class="meta-stat">
+      <span class="label">Strong fit (80+)</span>
+      <span class="num" id="strong-fit">—</span>
+    </div>
+    <div class="meta-stat">
+      <span class="label">Top match</span>
+      <span class="num" id="champion">—</span>
+    </div>
+
+    <div class="divider"></div>
+
+    <div class="section-label">Rental pins</div>
+    <div class="listings-toggle on" id="listingsToggle" onclick="toggleListings()" role="switch" aria-checked="true" tabindex="0">
+      <div class="listings-toggle-label">
+        <span class="t">Show rental listings</span>
+        <span class="s" id="listingsToggleStatus">On · zoom in for details</span>
+      </div>
+      <div class="listings-switch" aria-hidden="true"></div>
+    </div>
+
+    <div class="divider"></div>
+
+    <button class="ghost-btn" onclick="retakeQuiz()">↻ Retake quiz</button>
+  </aside>
+
+  <div class="map-wrap">
+    <div id="map"></div>
+
+    <div class="map-overlay">
+      <div class="overlay-card">
+        <div class="overlay-title">The map, personalized</div>
+        <div class="overlay-main">Sydney, recolored for <strong>you</strong>. <span style="color:#15803d;font-weight:600">Green</span> = strong fit, <span style="color:#b91c1c;font-weight:600">red</span> = avoid.</div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <div class="legend-title">Fit Score</div>
+      <div class="legend-bar"></div>
+      <div class="legend-labels">
+        <span>Avoid</span><span>Neutral</span><span>Strong fit</span>
+      </div>
+      <label class="legend-toggle" for="heatmapToggle">
+        <input type="checkbox" id="heatmapToggle" checked
+               onchange="toggleHeatmap(this.checked)">
+        <span class="legend-switch"><span class="legend-switch-thumb"></span></span>
+        <span class="legend-toggle-label">Heatmap</span>
+      </label>
+      <div class="legend-explainer">
+        <div class="legend-explainer-title">How it works</div>
+        <p>Colours blend the 45 scored Sydney suburbs through a 2.4&nbsp;km gaussian, so pixels near multiple suburbs inherit a mix of their fit scores — that's why borders feather instead of cliff-edging. Each suburb's score is mean-centred cosine similarity between its feature vector and your quiz-derived taste vector, softly gated by your weekly budget.</p>
+      </div>
+    </div>
+
+    <!-- POI category filter — populated dynamically by renderPoiFilter() -->
+    <div class="poi-filter-wrap">
+      <div class="poi-filter-title">What's on the map</div>
+      <div class="poi-filter" id="poiFilter"></div>
+    </div>
+
+    <div class="top-suburbs collapsed" id="topSuburbs">
+      <div class="ts-header" onclick="toggleTopSuburbs()">
+        <div class="ts-header-left">
+          <span class="ts-caret" id="tsCaret">▾</span>
+          <span id="tsTitle">Your Top 10</span>
+        </div>
+        <span>Fit</span>
+      </div>
+      <div class="ts-body" id="tsBody"></div>
+    </div>
+
+    <div class="suburb-hover-name" id="hoverName"></div>
+  </div>
+
+  <aside class="drawer" id="drawer">
+    <button class="drawer-close" onclick="closeDrawer()">×</button>
+    <div class="drawer-inner" id="drawer-content"></div>
+  </aside>
+</div>
+
+<script>
+// ========================================================================
+// Config
+// ========================================================================
+const API_BASE = 'http://localhost:8000';
+const DIMENSIONS = ['social_energy','aesthetic','pace','outdoor','culinary','community'];
+const DIMENSION_LABELS = {
+  social_energy: 'Social energy',
+  aesthetic:     'Aesthetic',
+  pace:          'Pace',
+  outdoor:       'Outdoor',
+  culinary:      'Culinary',
+  community:     'Community',
+};
+
+// ========================================================================
+// State
+// ========================================================================
+let quizQuestions = [];       // from /quiz
+let quizAnswers   = {};       // {question_id: answer_id}
+let currentStep   = 0;        // 0..quizQuestions.length (last step = budget)
+let userBudget    = 700;
+
+let matchResponse = null;     // { user_vector, suburbs }
+let suburbs       = [];       // [{suburb, lat, lng, match_score, rent_2br, dimensions, positive, negative}]
+let userVector    = null;
+let personaProfile = null;    // { headline, summary, wants, source } from /profile
+
+let debounceBudget = null;
+
+// ========================================================================
+// Quiz flow
+// ========================================================================
+async function bootQuiz() {
+  try {
+    const r = await fetch(API_BASE + '/quiz');
+    if (!r.ok) throw new Error('status ' + r.status);
+    const data = await r.json();
+    quizQuestions = data.questions;
+    currentStep = 0;
+    renderQuizStep();
+  } catch (err) {
+    document.getElementById('quizBody').innerHTML = `
+      <div class="quiz-question">Can't reach the Orbit backend.</div>
+      <p style="color:var(--muted);font-size:13px;line-height:1.5;margin-bottom:20px;">
+        Start it with <code style="background:var(--line-soft);padding:2px 6px;border-radius:4px;">cd backend && uvicorn api:app --reload --port 8000</code> then refresh.
+      </p>
+      <div class="quiz-error show">${err.message}</div>
+    `;
+  }
+}
+
+function totalSteps() { return quizQuestions.length + 1; }
+
+function renderQuizStep() {
+  const step = currentStep;
+  const total = totalSteps();
+  document.getElementById('quizStep').textContent = `Step ${step + 1} / ${total}`;
+  document.getElementById('quizProgress').style.width = ((step + 1) / total * 100) + '%';
+
+  if (step < quizQuestions.length) {
+    const q = quizQuestions[step];
+    const selected = quizAnswers[q.id];
+    document.getElementById('quizBody').innerHTML = `
+      <div class="quiz-question">${escapeHTML(q.text)}</div>
+      <div class="quiz-answers">
+        ${q.answers.map(a => `
+          <button class="quiz-answer ${selected === a.id ? 'selected' : ''}"
+                  onclick="pickAnswer('${q.id}','${a.id}')">
+            ${escapeHTML(a.label)}
+          </button>
+        `).join('')}
+      </div>
+      <div class="quiz-nav">
+        <button class="quiz-back" onclick="quizBack()" ${step === 0 ? 'disabled' : ''}>← Back</button>
+        <button class="quiz-cta" onclick="quizNext()" ${selected ? '' : 'disabled'}>Next →</button>
+      </div>
+    `;
+  } else {
+    // Final step — budget
+    document.getElementById('quizBody').innerHTML = `
+      <div class="quiz-question">Last one — what's your weekly 2BR rent budget?</div>
+      <p style="color:var(--muted);font-size:13px;line-height:1.5;margin-bottom:22px;">
+        We'll rank every suburb against your taste, then fade anything materially over budget.
+        You'll still see unaffordable strong fits — they just sink to the bottom.
+      </p>
+      <div class="quiz-budget-wrap">
+        <div class="quiz-budget-label">
+          <span>Weekly rent</span>
+          <span class="val" id="quizBudgetVal">$${userBudget}</span>
+        </div>
+        <input type="range" min="300" max="2000" step="10" value="${userBudget}" id="quizBudget"
+               oninput="onQuizBudgetSlider(this.value)">
+        <div class="slider-labels"><span>$300</span><span>$2000</span></div>
+        <div class="budget-manual">
+          <label for="quizBudgetInput">Set exactly</label>
+          <span class="prefix">
+            <span>$</span>
+            <input type="number" id="quizBudgetInput" min="100" max="5000" step="10" value="${userBudget}"
+                   oninput="onQuizBudgetTyped(this.value)">
+          </span>
+          <span class="unit">/week</span>
+        </div>
+      </div>
+      <div class="quiz-nav">
+        <button class="quiz-back" onclick="quizBack()">← Back</button>
+        <button class="quiz-cta" onclick="submitQuiz()">Show me my Sydney →</button>
+      </div>
+      <div class="quiz-error" id="quizError"></div>
+    `;
+  }
+}
+
+function pickAnswer(qId, aId) {
+  quizAnswers[qId] = aId;
+  // auto-advance after a short pulse so the selection registers visually
+  renderQuizStep();
+  setTimeout(() => {
+    if (currentStep < quizQuestions.length) quizNext();
+  }, 180);
+}
+
+function quizNext() {
+  if (currentStep < quizQuestions.length) {
+    const q = quizQuestions[currentStep];
+    if (!quizAnswers[q.id]) return;
+  }
+  currentStep++;
+  renderQuizStep();
+}
+
+function quizBack() {
+  if (currentStep === 0) return;
+  currentStep--;
+  renderQuizStep();
+}
+
+async function submitQuiz() {
+  document.getElementById('quizBody').innerHTML = `
+    <div class="quiz-loading"><span class="spinner"></span>Scoring 45 suburbs against your vector…</div>
+  `;
+  try {
+    await fetchMatch(userBudget);
+    // Sync sidebar budget controls with the quiz budget.
+    const sb  = document.getElementById('budget');
+    const sbv = document.getElementById('budget-val');
+    const sbi = document.getElementById('budgetInput');
+    if (sb)  sb.value  = Math.max(BUDGET_SLIDER_MIN, Math.min(BUDGET_SLIDER_MAX, userBudget));
+    if (sbv) sbv.textContent = '$' + userBudget;
+    if (sbi) sbi.value = userBudget;
+    finishQuiz();
+    // Kick off the persona call in the background — the map's already
+    // usable, we just swap in the AI copy when it lands.
+    refreshPersona();
+  } catch (err) {
+    document.getElementById('quizBody').innerHTML = `
+      <div class="quiz-question">Match failed.</div>
+      <div class="quiz-error show">${err.message}</div>
+      <div class="quiz-nav" style="margin-top:20px;">
+        <button class="quiz-back" onclick="renderQuizStep()">← Back</button>
+        <button class="quiz-cta" onclick="submitQuiz()">Retry</button>
+      </div>
+    `;
+  }
+}
+
+function finishQuiz() {
+  document.getElementById('quizOverlay').classList.add('hidden');
+  setTimeout(() => {
+    document.getElementById('quizOverlay').style.display = 'none';
+  }, 650);
+
+  ensureMap();
+  renderTasteBars();
+  renderAll();
+}
+
+function retakeQuiz() {
+  closeDrawer();
+  currentStep = 0;
+  quizAnswers = {};
+  personaProfile = null;
+  const pc = document.getElementById('personaCard');
+  if (pc) pc.style.display = 'none';
+  document.getElementById('quizOverlay').style.display = 'flex';
+  document.getElementById('quizOverlay').classList.remove('hidden');
+  if (quizQuestions.length === 0) {
+    bootQuiz();
+  } else {
+    renderQuizStep();
+  }
+}
+
+// ========================================================================
+// API calls
+// ========================================================================
+async function fetchMatch(budget) {
+  const r = await fetch(API_BASE + '/match', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({answers: quizAnswers, budget: budget, limit: 45}),
+  });
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error(`match ${r.status}: ${txt}`);
+  }
+  matchResponse = await r.json();
+  suburbs = matchResponse.suburbs;
+  userVector = matchResponse.user_vector;
+}
+
+async function fetchSuburb(name) {
+  const parts = DIMENSIONS.map(d => `${d}=${userVector[d]}`);
+  if (personaProfile && personaProfile.summary) {
+    parts.push('persona=' + encodeURIComponent(personaProfile.summary));
+  }
+  const r = await fetch(`${API_BASE}/suburb/${encodeURIComponent(name)}?${parts.join('&')}`);
+  if (!r.ok) throw new Error('suburb ' + r.status);
+  return r.json();
+}
+
+async function fetchProfile() {
+  const r = await fetch(API_BASE + '/profile', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({answers: quizAnswers}),
+  });
+  if (!r.ok) throw new Error('profile ' + r.status);
+  return r.json();
+}
+
+async function refreshPersona() {
+  const card = document.getElementById('personaCard');
+  if (card) {
+    card.style.display = 'block';
+    card.classList.add('loading');
+    document.getElementById('personaHeadline').textContent = 'Reading your taste…';
+    document.getElementById('personaSummary').textContent = '';
+    document.getElementById('personaWants').innerHTML = '';
+  }
+  try {
+    personaProfile = await fetchProfile();
+  } catch (err) {
+    console.warn('Persona fetch failed:', err);
+    personaProfile = {
+      headline: 'Your Orbit profile',
+      summary:  "We couldn't reach the AI layer, so these are the template insights.",
+      wants:    [],
+      source:   'fallback',
+    };
+  }
+  renderPersona();
+}
+
+function renderPersona() {
+  const card = document.getElementById('personaCard');
+  if (!card) return;
+  if (!personaProfile) { card.style.display = 'none'; return; }
+
+  card.style.display = 'block';
+  card.classList.remove('loading');
+
+  const isLLM = personaProfile.source === 'llm';
+  const kicker = document.getElementById('personaKicker');
+  kicker.className = 'persona-kicker' + (isLLM ? '' : ' template');
+  kicker.innerHTML =
+    `<span class="dot"></span>${isLLM ? 'AI persona' : 'Template persona'}`;
+
+  document.getElementById('personaHeadline').textContent =
+    personaProfile.headline || 'Your Orbit profile';
+  document.getElementById('personaSummary').textContent =
+    personaProfile.summary || '';
+  const wants = personaProfile.wants || [];
+  document.getElementById('personaWants').innerHTML =
+    wants.map(w => `<li>${escapeHTML(w)}</li>`).join('');
+}
+
+// ========================================================================
+// Map
+// ========================================================================
+let map, fitLayer, polygonLayer, labelLayer, fitPaneEl, listingLayer;
+let poiLayer;                     // POIs — main map feature (smart render)
+let allPois = [];                 // full POI list from /pois, cached
+let poiLoaded = false;
+// ---- POI render caches (populated by indexPois()) -----------------------
+// Pre-bucketing + pre-sorting turns the hot render path from O(12,738) per
+// frame into O(45 suburbs + K picked). Combined with marker diffing and
+// icon caching, pan/zoom stays silky even with the full OSM POI set.
+let poisBySuburb   = new Map();   // suburbKey → POIs sorted by salience desc
+let suburbBox      = new Map();   // suburbKey → {minLat,maxLat,minLng,maxLng}
+let activeMarkers  = new Map();   // poi.id → {marker, stateKey} — diff target
+let poiIconCache   = new Map();   // "group:focus:pref" → L.DivIcon (shared)
+let _poiRafScheduled = false;     // rAF coalescer for smooth pan rendering
+let _zoomAnimating   = false;     // skip renders mid-zoom (Leaflet transforms)
+let suburbPolygons = null;   // raw GeoJSON FeatureCollection
+let polygonsLoaded = false;
+let currentHoverLayer = null;   // one-at-a-time hover tracking
+let selectedPolygonLayer = null; // polygon for the currently-open drawer
+let polygonByName = new Map();  // suburbName → L.Layer, for setSelectedPolygon
+let listingsVisible = true;     // sidebar toggle; persisted across /match refreshes
+let activeListing = null;       // currently-open modal listing (for ESC key)
+
+// POI groups — display metadata for the legend/filter chips and the markers.
+// `icon` holds Lucide-style SVG inner markup (rendered inside a 24x24 viewBox
+// with stroke=currentColor so the colour can be themed via CSS).
+// Category colours are tuned to read clearly on BOTH surfaces: the dark-
+// glass marker (rgba(18,18,22,0.58) backdrop) and the white filter chip.
+// Tailwind-500s land at the right contrast point for both — any brighter
+// and chips look washed out on white; any darker and markers disappear.
+const POI_GROUPS = {
+  restaurant: { label: 'Restaurants', color: '#f97316',
+    icon: '<path d="M3 2v7c0 1.1.9 2 2 2h4a2 2 0 0 0 2-2V2"/><path d="M7 2v20"/><path d="M21 15V2a5 5 0 0 0-5 5v6c0 1.1.9 2 2 2h3Z"/><path d="M21 15v7"/>' },
+  cafe:       { label: 'Cafés',       color: '#f59e0b',
+    icon: '<path d="M17 8h1a4 4 0 1 1 0 8h-1"/><path d="M3 8h14v9a4 4 0 0 1-4 4H7a4 4 0 0 1-4-4Z"/><line x1="6" y1="2" x2="6" y2="4"/><line x1="10" y1="2" x2="10" y2="4"/><line x1="14" y1="2" x2="14" y2="4"/>' },
+  bar:        { label: 'Bars & pubs', color: '#8b5cf6',
+    icon: '<path d="M8 22h8"/><path d="M7 10h10"/><path d="M12 15v7"/><path d="M12 15a5 5 0 0 0 5-5c0-2-.5-4-2-8H9c-1.5 4-2 6-2 8a5 5 0 0 0 5 5Z"/>' },
+  bakery:     { label: 'Bakeries',    color: '#ec4899',
+    icon: '<path d="M12 2a10 10 0 1 0 10 10 4 4 0 0 1-5-5 4 4 0 0 1-5-5"/><path d="M8.5 8.5v.01"/><path d="M16 15.5v.01"/><path d="M11.5 11.5v.01"/><path d="M11 17v.01"/><path d="M7 14v.01"/>' },
+  park:       { label: 'Parks',       color: '#22c55e',
+    icon: '<path d="m17 14 3 3.3a1 1 0 0 1-.7 1.7H4.7a1 1 0 0 1-.7-1.7L7 14"/><path d="M9 9.5 12 6l3 3.5"/><path d="M11 21v-3"/><path d="M9 9.5h6"/>' },
+  beach:      { label: 'Beaches',     color: '#06b6d4',
+    icon: '<path d="M2 6c.6.5 1.2 1 2.5 1C7 7 7 5 9.5 5c2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/><path d="M2 12c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/><path d="M2 18c.6.5 1.2 1 2.5 1 2.5 0 2.5-2 5-2 2.6 0 2.4 2 5 2 2.5 0 2.5-2 5-2 1.3 0 1.9.5 2.5 1"/>' },
+  gym:        { label: 'Gyms',        color: '#3b82f6',
+    icon: '<path d="M14.4 14.4 9.6 9.6"/><path d="M18.657 21.485a2 2 0 1 1-2.829-2.828l-1.767 1.768a2 2 0 1 1-2.829-2.829l6.364-6.364a2 2 0 1 1 2.829 2.829l-1.768 1.767a2 2 0 1 1 2.828 2.829z"/><path d="m21.5 21.5-1.4-1.4"/><path d="M3.9 3.9 2.5 2.5"/><path d="M6.404 12.768a2 2 0 1 1-2.829-2.829l1.768-1.767a2 2 0 1 1-2.828-2.829l2.828-2.828a2 2 0 1 1 2.829 2.828l1.767-1.768a2 2 0 1 1 2.829 2.829z"/>' },
+  gallery:    { label: 'Galleries',   color: '#d946ef',
+    icon: '<rect width="18" height="18" x="3" y="3" rx="2" ry="2"/><circle cx="9" cy="9" r="2"/><path d="m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"/>' },
+  cinema:     { label: 'Cinemas',     color: '#6366f1',
+    icon: '<path d="M20.2 6 3 11l-.9-2.4c-.3-1.1.3-2.2 1.3-2.5l13.5-4c1.1-.3 2.2.3 2.5 1.3Z"/><path d="m6.2 5.3 3.1 3.9"/><path d="m12.4 3.4 3.1 4"/><path d="M3 11h18v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>' },
+  library:    { label: 'Libraries',   color: '#14b8a6',
+    icon: '<path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20"/><path d="M9 7h6"/><path d="M9 11h4"/>' },
+};
+// Renders the inline SVG for a group at any pixel size. Stroke is bound to
+// currentColor so callers can theme via CSS `color:`.
+function poiIconSVG(group, size = 16) {
+  const meta = POI_GROUPS[group];
+  if (!meta) return '';
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" `
+       + `viewBox="0 0 24 24" fill="none" stroke="currentColor" `
+       + `stroke-width="2" stroke-linecap="round" stroke-linejoin="round">`
+       + `${meta.icon}</svg>`;
+}
+// Which personality dimension each POI group primarily satisfies. Drives the
+// personalised-salience boost below: if a user scored high on outdoor, their
+// map fills with parks and beaches before it fills with restaurants.
+const POI_GROUP_DIMENSION = {
+  restaurant: 'culinary',      cafe: 'culinary',   bakery: 'culinary',
+  bar:        'social_energy', park: 'outdoor',    beach: 'outdoor',
+  gym:        'outdoor',       gallery: 'aesthetic', cinema: 'aesthetic',
+  library:    'community',
+};
+// Visual-weight priors — rare categories deserve more map real estate. A
+// beach showing up in your view is more interesting than another cafe, so
+// it wins grid-bin ties at wide zoom. Tuned by hand from the group counts.
+const POI_GROUP_RARITY = {
+  beach: 1.45, cinema: 1.25, gallery: 1.15, library: 1.05,
+  gym: 0.95,   bakery: 0.85, bar: 0.75,     park: 0.70,
+  cafe: 0.55,  restaurant: 0.40,
+};
+
+let activePoiGroups = new Set(Object.keys(POI_GROUPS));   // all on by default
+// When a suburb's drawer is open we "focus" that suburb — its POIs expand
+// to full detail, while other suburbs stay collapsed to headline markers.
+// Null = no focus, city-wide summary view.
+let focusedSuburb = null;
+// Below POI_MIN_ZOOM we hide POIs entirely in the default (un-focused) view.
+// The app loads at zoom ~12.2, so users must zoom in by ~1.5 levels before
+// landmark dots appear — keeps the wide Sydney view clean. Focused mode
+// (a suburb drawer is open) bypasses this check.
+const POI_MIN_ZOOM = 13.5;
+// Hard cap on how many POI markers we'll render at once. Keeps the DOM light
+// and guarantees the map never looks like confetti.
+const POI_RENDER_CAP = 160;
+// Default (un-focused) suburbs get this many headline POIs each. Strictly 1 —
+// the map at rest reads as "one iconic place per suburb", not "pin soup".
+const POI_HEADLINE_MAX_DEFAULT = 1;
+// A focused suburb (drawer open) blooms to this many. Kept tight so even in
+// focus the map stays readable.
+const POI_FOCUSED_MAX          = 22;
+
+function ensureMap() {
+  if (map) return;
+  // Map options. Native scrollWheelZoom is disabled below in favour of a
+  // custom wheel handler — Leaflet's built-in ScrollWheelZoom accumulates
+  // deltas over `wheelDebounceTime` and divides by `wheelPxPerZoomLevel`
+  // then rounds with ceil(d / zoomSnap) * zoomSnap. At zoomSnap=0.5 with a
+  // typical wheel notch delta ≈ 180 this rounds to 1.5 zoom levels, which
+  // feels like a double-scroll even on a single notch. Our custom handler
+  // is fixed: one wheel event = one zoom level, hard-throttled so bursts
+  // can't pile up. zoomSnap is kept at 0.5 because keyboard +/- and pinch
+  // still benefit from half-level granularity.
+  map = L.map('map', {
+    center: [-33.895, 151.16],
+    zoom: 12.2,
+    zoomControl: false,
+    attributionControl: true,
+    zoomSnap: 0.5,
+    scrollWheelZoom: false,
+    zoomAnimationThreshold: 6,
+  });
+  // +/- control lives at bottom-right — out of the way of the Top-10 panel
+  // at top-right, sits naturally near the attribution text.
+  L.control.zoom({position: 'bottomright'}).addTo(map);
+
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png', {
+    attribution: '© OpenStreetMap · © CARTO',
+    subdomains: 'abcd', maxZoom: 19,
+  }).addTo(map);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/light_only_labels/{z}/{x}/{y}{r}.png', {
+    subdomains: 'abcd', maxZoom: 19, opacity: 0.4,
+  }).addTo(map);
+
+  labelLayer = L.layerGroup().addTo(map);
+
+  // POI pane — sits above polygons but below listing pins. Smart renderer
+  // caps markers at POI_RENDER_CAP and grid-bins in pixel space, so the
+  // DOM-based divIcon approach stays snappy without a canvas fallback.
+  map.createPane('poi-pane');
+  const poiPane = map.getPane('poi-pane');
+  poiPane.style.zIndex = 500;
+  poiPane.style.pointerEvents = 'auto';
+  poiLayer = L.layerGroup().addTo(map);
+
+  // Dedicated pane for listing pins so they always stack above the heatmap,
+  // the polygons, and the suburb labels — they're the most interactive
+  // element on the map and need to catch clicks/hovers cleanly.
+  map.createPane('listing-pane');
+  const listingPane = map.getPane('listing-pane');
+  listingPane.style.zIndex = 620;
+  listingPane.style.pointerEvents = 'auto';
+  listingLayer = L.layerGroup().addTo(map);
+
+  map.createPane('fit-pane');
+  fitPaneEl = map.getPane('fit-pane');
+  fitPaneEl.classList.add('fit-pane');
+  fitPaneEl.style.zIndex = 250;
+
+  // Polygon pane sits above the heatmap so hover strokes read as "on top".
+  map.createPane('polygon-pane');
+  const polyPane = map.getPane('polygon-pane');
+  polyPane.classList.add('polygon-pane');
+  polyPane.style.zIndex = 300;
+
+  // FitLayer perf knobs — createTile runs ~4k gaussian sums per tile, so
+  // the dominant zoom-in lag used to be "new zoom level fires, Leaflet
+  // requests ~25 tiles, each takes ~30ms, main thread freezes". These
+  // options flip that around:
+  //   updateWhenZooming: false  → don't issue createTile during the zoom
+  //                               animation; scale existing tiles in CSS
+  //                               instead so the animation stays 60fps.
+  //   updateWhenIdle:    true   → wait until the gesture ends before
+  //                               generating new tiles, coalescing bursts.
+  //   keepBuffer:        8      → retain plenty of off-screen tiles so a
+  //                               pan doesn't instantly force new ones;
+  //                               zooming back out reuses cached tiles.
+  fitLayer = new FitLayer({
+    pane: 'fit-pane',
+    tileSize: 256,
+    updateWhenZooming: false,
+    updateWhenIdle: true,
+    keepBuffer: 8,
+  }).addTo(map);
+
+  loadSuburbPolygons();
+
+  // Safety net: any time the cursor leaves the map (or the map fires
+  // mouseout without a polygon's mouseout firing first) we clear the hover.
+  // This catches the ghost-highlight case where a fast cursor crosses
+  // polygon edges too quickly for mouseout to dispatch.
+  map.on('mouseout', clearActivePolygonHover);
+  map.getContainer().addEventListener('mouseleave', clearActivePolygonHover);
+
+  // Listings render once at the end of a gesture — small debounce so
+  // drag-inertia moveends don't redraw per-frame. These are aggregate
+  // dots (max ~45), cheap enough that debounce is plenty.
+  const debounce = (fn, ms) => {
+    let t = null;
+    return () => {
+      if (t) clearTimeout(t);
+      t = setTimeout(() => { t = null; fn(); }, ms);
+    };
+  };
+  const renderListingsDebounced = debounce(renderListings, 50);
+
+  // Swap listing pins between "1 aggregate per suburb" and "every listing
+  // shown" whenever the user crosses the detail-zoom threshold.
+  map.on('zoomend', renderListingsDebounced);
+
+  // POIs: lazy-load once, then re-render on every pan/zoom via a rAF
+  // coalescer. `move` fires continuously during drag inertia — we collapse
+  // those into one render per frame (at most 60fps). Marker diffing keeps
+  // the per-frame cost close to zero when nothing in the viewport changed,
+  // so panning feels like the POIs are already there instead of popping in.
+  // Zoom animation is skipped (Leaflet transforms existing markers in CSS);
+  // we only re-grid at zoomend when the cell size changes.
+  loadPois();
+  map.on('zoomstart', () => { _zoomAnimating = true; });
+  map.on('zoomend', () => {
+    _zoomAnimating = false;
+    // Re-grid with the new zoom level's cell size. Bypass the rAF gate so
+    // the first frame after zoom shows the new selection immediately.
+    renderPois();
+  });
+  map.on('move', schedulePoiRender);
+
+  // Custom wheel zoom handler. Replaces Leaflet's ScrollWheelZoom (which
+  // accumulates deltaY over wheelDebounceTime and can produce 1.5-level
+  // zooms on a single fast wheel notch) with a dead-simple "one notch =
+  // one zoom level" model, hard-throttled so bursts can't pile up.
+  // Cursor-anchored via setZoomAround — the spot under the pointer stays
+  // put during zoom, matching native map feel. Pinch-zoom (ctrl+wheel on
+  // Mac trackpads) still reaches here with ctrlKey=true; we treat it the
+  // same way as regular wheel so pinch gives discrete zoom-level steps
+  // too — snappier and more predictable than analog pinch.
+  const WHEEL_LOCK_MS = 140;  // ~ one zoom animation's worth — prevents
+                              // a 2nd notch firing before the first settles.
+  let _wheelLockUntil = 0;
+  map.getContainer().addEventListener('wheel', (e) => {
+    if (!e.deltaY) return;
+    e.preventDefault();
+    const now = performance.now();
+    if (now < _wheelLockUntil) return;
+    _wheelLockUntil = now + WHEEL_LOCK_MS;
+    const dir = e.deltaY < 0 ? 1 : -1;
+    // Snap the current zoom to an integer before stepping so repeated
+    // wheel-ins/outs always land on clean integer levels, even if the
+    // user got there via a half-step keyboard or pinch gesture.
+    const target = Math.round(map.getZoom()) + dir;
+    const latlng = map.mouseEventToLatLng(e);
+    map.setZoomAround(latlng, target, { animate: true });
+  }, { passive: false });
+
+  // Keep Leaflet in sync while the right drawer collapses/expands. The
+  // `.app` grid animates `grid-template-columns`, which resizes the map
+  // container; ResizeObserver fires on every frame the container changes
+  // so tiles, the heatmap canvas, and listing/POI markers all stay aligned
+  // without snapping. `pan: false` keeps the user's centre point stable.
+  if (typeof ResizeObserver !== 'undefined') {
+    const ro = new ResizeObserver(() => {
+      if (map) map.invalidateSize({ pan: false, animate: false });
+    });
+    ro.observe(map.getContainer());
+  }
+}
+
+// ---- Suburb polygons (L.geoJSON with dark-glass hover) ------------------
+// Rated = Orbit has a match score for it (one of suburbs_ref.py's 45).
+// Unrated = every other Greater Sydney suburb in the source file. Both
+// get hover outlines so the map feels alive; only rated ones are clickable.
+const POLY_DEFAULT_RATED = {
+  stroke: false, fill: true, fillColor: '#000000', fillOpacity: 0,
+  interactive: true, className: 'suburb-polygon',
+};
+const POLY_DEFAULT_UNRATED = {
+  stroke: false, fill: true, fillColor: '#000000', fillOpacity: 0,
+  interactive: true, className: 'suburb-polygon',
+};
+const POLY_HOVER_RATED = {
+  stroke: true, color: 'rgba(10,10,10,0.88)', weight: 1.6, opacity: 1,
+  fillColor: '#0a0a0a', fillOpacity: 0.16,
+};
+const POLY_HOVER_UNRATED = {
+  stroke: true, color: 'rgba(10,10,10,0.55)', weight: 1.1, opacity: 1,
+  fillColor: '#0a0a0a', fillOpacity: 0.06,
+};
+// Selected = drawer is open for this suburb. Slightly stronger than hover
+// so a hovered-selected polygon doesn't look identical to a hovered one,
+// and so the highlight stays visible when the cursor leaves the polygon.
+const POLY_SELECTED = {
+  stroke: true, color: 'rgba(10,10,10,0.95)', weight: 2.0, opacity: 1,
+  fillColor: '#0a0a0a', fillOpacity: 0.22,
+};
+
+async function loadSuburbPolygons() {
+  if (polygonsLoaded) return;
+  try {
+    const r = await fetch(API_BASE + '/polygons', {cache: 'no-cache'});
+    if (!r.ok) throw new Error('status ' + r.status);
+    suburbPolygons = await r.json();
+  } catch (err) {
+    console.warn('[orbit] suburb polygons not loaded — run `python3 backend/fetch_suburb_polygons.py` once to generate data/suburbs.geojson, then restart uvicorn. (', err.message, ')');
+    return;
+  }
+
+  polygonLayer = L.geoJSON(suburbPolygons, {
+    pane: 'polygon-pane',
+    style: (feature) => feature.properties && feature.properties.rated
+      ? POLY_DEFAULT_RATED
+      : POLY_DEFAULT_UNRATED,
+    onEachFeature: (feature, layer) => {
+      const props = feature.properties || {};
+      const name  = props.name;
+      const rated = !!props.rated;
+      if (!name) return;
+
+      // Cache the layer so openDrawer() can re-highlight it when the drawer
+      // opens from somewhere other than a polygon click (eg ranked list).
+      if (rated) polygonByName.set(name, layer);
+
+      layer.on('mouseover', function () {
+        // Reset any previously hovered polygon before we take over. This is
+        // the key fix for "highlight sometimes doesn't go away" — crossing
+        // shared edges between adjacent polygons can swallow a mouseout.
+        if (currentHoverLayer && currentHoverLayer !== this) {
+          resetPolygonStyle(currentHoverLayer);
+        }
+        currentHoverLayer = this;
+        this.setStyle(rated ? POLY_HOVER_RATED : POLY_HOVER_UNRATED);
+        // Deliberately NOT calling bringToFront here — re-ordering SVG
+        // children during a hover can swallow the trailing mouseout on some
+        // browsers. Default styles have no stroke, so nothing to obscure.
+        showHoverName(name, rated);
+      });
+      layer.on('mouseout', function () {
+        if (currentHoverLayer === this) currentHoverLayer = null;
+        // If this polygon is the selected one (drawer open for it), keep it
+        // highlighted with the selected style instead of clearing. Otherwise
+        // fall back to its default transparent fill.
+        if (this === selectedPolygonLayer) {
+          this.setStyle(POLY_SELECTED);
+        } else {
+          resetPolygonStyle(this);
+        }
+        hideHoverName();
+      });
+      if (rated) {
+        layer.on('click', () => openDrawer(name));
+      }
+    },
+  }).addTo(map);
+
+  polygonsLoaded = true;
+}
+
+function resetPolygonStyle(layer) {
+  if (!layer || !layer.feature) return;
+  // Don't wipe the selected polygon's highlight — callers that want to clear
+  // selection must go through setSelectedPolygon(null).
+  if (layer === selectedPolygonLayer) {
+    layer.setStyle(POLY_SELECTED);
+    return;
+  }
+  const rated = !!(layer.feature.properties && layer.feature.properties.rated);
+  layer.setStyle(rated ? POLY_DEFAULT_RATED : POLY_DEFAULT_UNRATED);
+}
+
+function clearActivePolygonHover() {
+  if (currentHoverLayer) {
+    resetPolygonStyle(currentHoverLayer);
+    currentHoverLayer = null;
+  }
+  hideHoverName();
+}
+
+// Persistent "this suburb's drawer is open" highlight. Survives mouseout,
+// pan, and zoom. Clears when the drawer closes or another suburb is picked.
+function setSelectedPolygon(name) {
+  // Clear previous selection back to default (or hover, if still hovered).
+  if (selectedPolygonLayer) {
+    const prev = selectedPolygonLayer;
+    selectedPolygonLayer = null;
+    if (prev === currentHoverLayer) {
+      const prevRated = !!(prev.feature && prev.feature.properties && prev.feature.properties.rated);
+      prev.setStyle(prevRated ? POLY_HOVER_RATED : POLY_HOVER_UNRATED);
+    } else {
+      resetPolygonStyle(prev);
+    }
+  }
+  if (!name) return;
+  const layer = polygonByName.get(name);
+  if (!layer) return;
+  selectedPolygonLayer = layer;
+  layer.setStyle(POLY_SELECTED);
+}
+
+function showHoverName(name, rated) {
+  const el = document.getElementById('hoverName');
+  if (!el) return;
+  if (rated) {
+    const row = suburbs.find(s => s.suburb === name);
+    const score = row ? Math.round(row.match_score) : null;
+    el.innerHTML = `${escapeHTML(name)}${score !== null ? `<span class="score">${score}</span>` : ''}`;
+  } else {
+    el.innerHTML = `${escapeHTML(name)}<span class="score" style="background:rgba(255,255,255,0.08);opacity:0.75">not rated</span>`;
+  }
+  el.classList.add('show');
+}
+function hideHoverName() {
+  const el = document.getElementById('hoverName');
+  if (el) el.classList.remove('show');
+}
+
+// ---- Gaussian per-pixel interpolation -----------------------------------
+// Wide gaussian + no cutoff = continuous colour bands across the whole
+// metro, but balanced so individual suburbs still register as peaks.
+// Sigma sweep for reference, using neighbour weight at 3km:
+//   σ=1.8  →  20% weight  — nearest suburb dominates, reads as blobs
+//   σ=2.4  →  46% weight  — clean feathering at borders, peaks still pop
+//   σ=3.5  →  70% weight  — everything smears into one big gradient
+// 2.4 is the "smooth but meaningful" middle: a suburb's score still shows
+// up as a local maximum, yet colour bleeds softly across polygon borders
+// rather than cliff-edging at them.
+const LAT_KM    = 111, LNG_KM = 93;
+const SIGMA_KM  = 2.4;
+const TWO_SIG2  = 2 * SIGMA_KM * SIGMA_KM;
+
+function computeFit(lat, lng) {
+  let totalW = 0, weighted = 0;
+  // N=45 suburbs — cheap enough to walk every one per pixel. Skipping the
+  // cutoff is what turns discrete blobs into continuous regions: a pixel
+  // midway between three suburbs inherits a blend of all three, not grey.
+  for (const s of suburbs) {
+    const dLatKm = (lat - s.lat) * LAT_KM;
+    const dLngKm = (lng - s.lng) * LNG_KM;
+    const d2 = dLatKm * dLatKm + dLngKm * dLngKm;
+    const w = Math.exp(-d2 / TWO_SIG2);
+    totalW   += w;
+    weighted += w * s.match_score;
+  }
+  // Very soft baseline pull — only affects the far outer ring of the bbox
+  // (20km+ from any suburb) where gaussian weights are already tiny. Inside
+  // the metro the real scores dominate completely, so colour stays strong.
+  totalW   += 0.04;
+  weighted += 0.04 * 50;
+  return weighted / totalW;
+}
+
+// Red → grey → green
+const STOPS = [
+  [  0, 185,  28,  28],
+  [ 18, 220,  38,  38],
+  [ 32, 239,  68,  68],
+  [ 42, 226, 160, 140],
+  [ 50, 190, 193, 199],
+  [ 58, 165, 210, 175],
+  [ 72, 110, 215, 130],
+  [ 88,  34, 197,  94],
+  [100,  21, 128,  61]
+];
+function fitToRGB(fit) {
+  if (fit <= STOPS[0][0])                 return STOPS[0];
+  if (fit >= STOPS[STOPS.length - 1][0])  return STOPS[STOPS.length - 1];
+  let i = 0;
+  while (i < STOPS.length - 1 && fit > STOPS[i + 1][0]) i++;
+  const a = STOPS[i], b = STOPS[i + 1];
+  const t = (fit - a[0]) / (b[0] - a[0]);
+  return [
+    a[1] + (b[1] - a[1]) * t,
+    a[2] + (b[2] - a[2]) * t,
+    a[3] + (b[3] - a[3]) * t
+  ];
+}
+
+const FitLayer = L.GridLayer.extend({
+  createTile: function (coords) {
+    const tile = document.createElement('canvas');
+    const size = this.getTileSize();
+    tile.width  = size.x;
+    tile.height = size.y;
+    const ctx = tile.getContext('2d');
+    const img = ctx.createImageData(size.x, size.y);
+    const data = img.data;
+
+    const baseX = coords.x * size.x;
+    const baseY = coords.y * size.y;
+    // STRIDE scales with zoom. At high zoom each pixel covers less
+    // lat/lng, so a 4px stride samples finer than it did at low zoom —
+    // we can afford to sparser-sample without visible loss. The pane's
+    // 2px CSS blur smooths over the coarser grid. At zoom ≥15 we often
+    // have 30+ tiles in view so STRIDE 6 cuts the per-frame cost by
+    // ~2.25x vs STRIDE 4. Was the dominant source of zoom-in lag.
+    const STRIDE = coords.z >= 15 ? 6 : coords.z >= 14 ? 5 : 4;
+
+    for (let y = 0; y < size.y; y += STRIDE) {
+      for (let x = 0; x < size.x; x += STRIDE) {
+        const ll  = map.unproject([baseX + x, baseY + y], coords.z);
+        const fit = suburbs.length ? computeFit(ll.lat, ll.lng) : 50;
+        const rgb = fitToRGB(fit);
+        const r = rgb[0] | 0, g = rgb[1] | 0, b = rgb[2] | 0;
+        // Low base, deviation-driven peak. Far-from-metro pixels (ocean,
+        // western bushland) compute near fit=50 so alpha stays near 85 —
+        // subtle enough to not wash the background — while in-metro peaks
+        // (high-match suburbs) push up to ~230 for vivid green/red regions.
+        const dev = Math.abs(fit - 50);
+        const a   = 85 + Math.min(145, dev * 3.6);
+        for (let dy = 0; dy < STRIDE && y + dy < size.y; dy++) {
+          for (let dx = 0; dx < STRIDE && x + dx < size.x; dx++) {
+            const idx = ((y + dy) * size.x + (x + dx)) * 4;
+            data[idx]     = r;
+            data[idx + 1] = g;
+            data[idx + 2] = b;
+            data[idx + 3] = a;
+          }
+        }
+      }
+    }
+    ctx.putImageData(img, 0, 0);
+    return tile;
+  }
+});
+
+function renderHeat() { if (fitLayer) fitLayer.redraw(); }
+
+// Show/hide the heatmap layer. Toggles visibility on the `fit-pane` DOM
+// element rather than add/removing the layer so we keep cached tiles —
+// flicking the toggle on and off is instant, no recompute. Called from
+// the legend's checkbox handler.
+function toggleHeatmap(enabled) {
+  if (fitPaneEl) fitPaneEl.style.display = enabled ? '' : 'none';
+}
+
+function renderLabels() {
+  // Top-10 pill labels removed — they were stale "Suburb · 87" tags that
+  // lived on the map after /match and never changed with navigation. The
+  // same info is in the right-side top-10 panel, the polygon hover name,
+  // and the POI markers. We still clear the layer on every call so any
+  // residual tags from hot-reload / older sessions get wiped.
+  if (labelLayer) labelLayer.clearLayers();
+}
+
+// ========================================================================
+// Listing pins (realestate.com-style) + hover preview + detail modal
+// ========================================================================
+// The backend ships every /match suburb with a `listings` array of ~3 mock
+// rentals (address, rent_pw, beds/baths, image, headline, description, a
+// realestate.com.au filter URL, and a jittered lat/lng around the suburb
+// centre). We drop a custom divIcon price-pin at each listing, bind a
+// hover tooltip styled like a realestate.com card, and open a full
+// detail modal on click.
+function listingPriceLabel(rent) {
+  return '$' + Math.round(rent).toLocaleString();
+}
+
+function listingTooltipHTML(l) {
+  const price = listingPriceLabel(l.rent_pw);
+  const img = l.image
+    ? `<div class="listing-preview-img" style="background-image:url('${escapeHTML(l.image)}');"></div>`
+    : '<div class="listing-preview-img"></div>';
+  return `
+    ${img}
+    <div class="listing-preview-body">
+      <div class="listing-preview-price">${price}<span style="opacity:0.5;font-weight:500;font-size:12px;"> / wk</span></div>
+      <div class="listing-preview-addr">${escapeHTML(l.address || '')}</div>
+      <div class="listing-preview-meta">
+        <span>${l.beds} bed</span>
+        <span>${l.baths} bath</span>
+        ${l.parking != null ? `<span>${l.parking} car</span>` : ''}
+        ${l.property_type ? `<span>· ${escapeHTML(l.property_type)}</span>` : ''}
+      </div>
+      <div class="listing-preview-cta">Click for details →</div>
+    </div>
+  `;
+}
+
+// Listings are a secondary feature — POIs are the main map signal. So we
+// only surface listing pins once the user has zoomed in on a specific area:
+//   zoom >= LISTING_DETAIL_ZOOM  →  individual listing pins
+//   zoom >= LISTING_AGG_ZOOM     →  one aggregate "from $X · 3" pill per suburb
+//   zoom >= LISTING_DOT_ZOOM     →  one small dot per suburb
+//   otherwise                    →  listings hidden entirely
+const LISTING_DETAIL_ZOOM = 15;
+const LISTING_AGG_ZOOM    = 14;
+const LISTING_DOT_ZOOM    = 13;
+
+function renderListings() {
+  if (!listingLayer) return;
+  listingLayer.clearLayers();
+  if (!listingsVisible) return;
+
+  const budget = userBudget;
+  const zoom = map ? map.getZoom() : 12;
+  // Below LISTING_DOT_ZOOM we don't render listing pins at all — the POIs
+  // own that zoom level.
+  if (zoom < LISTING_DOT_ZOOM) return;
+  const mode =
+    zoom >= LISTING_DETAIL_ZOOM ? 'detail' :
+    zoom >= LISTING_AGG_ZOOM    ? 'aggregate' :
+                                   'dot';
+
+  for (const s of suburbs) {
+    const L_ = (s.listings || []).filter(l => l.lat != null && l.lng != null);
+    if (!L_.length) continue;
+
+    if (mode === 'detail') {
+      // Expanded mode — one pin per individual listing.
+      for (const l of L_) {
+        const listingWithSuburb = { ...l, suburb: s.suburb, match_score: s.match_score };
+        const over = l.rent_pw > budget;
+        const pinHTML = `
+          <div class="listing-pin${over ? ' over-budget' : ''}">
+            <span class="pin-price">${listingPriceLabel(l.rent_pw)}</span>
+            <span class="pin-beds">${l.beds}BR</span>
+          </div>
+        `;
+        const icon = L.divIcon({
+          className: 'listing-pin-wrap',
+          html: pinHTML,
+          iconSize: null,
+          iconAnchor: [34, 28],
+        });
+        const marker = L.marker([l.lat, l.lng], {
+          icon: icon,
+          pane: 'listing-pane',
+          riseOnHover: true,
+          keyboard: false,
+        });
+        marker.bindTooltip(listingTooltipHTML(listingWithSuburb), {
+          className: 'listing-preview',
+          direction: 'top',
+          offset: [0, -30],
+          opacity: 1,
+          sticky: false,
+        });
+        marker.on('click', () => openListingModal(listingWithSuburb));
+        marker.addTo(listingLayer);
+      }
+    } else if (mode === 'aggregate') {
+      // Mid zoom — one aggregate pin per suburb at the suburb centre.
+      const minRent = Math.min(...L_.map(l => l.rent_pw));
+      const count = L_.length;
+      const aggHTML = `
+        <div class="listing-pin-aggregate" title="${escapeAttr(s.suburb)} · ${count} listing${count > 1 ? 's' : ''} from ${listingPriceLabel(minRent)}/wk">
+          <span class="agg-price">from ${listingPriceLabel(minRent)}</span>
+          <span class="agg-count">${count}</span>
+        </div>
+      `;
+      const icon = L.divIcon({
+        className: 'listing-pin-wrap',
+        html: aggHTML,
+        iconSize: null,
+        iconAnchor: [30, 14],
+      });
+      const marker = L.marker([s.lat, s.lng], {
+        icon: icon,
+        pane: 'listing-pane',
+        riseOnHover: true,
+        keyboard: false,
+      });
+      marker.on('click', () => {
+        // Zoom into the suburb — renderListings will re-run via zoomend
+        // and swap the aggregate for individual listings.
+        if (map) map.flyTo([s.lat, s.lng], Math.max(LISTING_DETAIL_ZOOM + 0.5, zoom + 1.5), {
+          duration: 0.55,
+        });
+      });
+      marker.addTo(listingLayer);
+    } else {
+      // Low zoom — bird's-eye view. Just a dot per suburb.
+      const minRent = Math.min(...L_.map(l => l.rent_pw));
+      const count = L_.length;
+      const dotHTML = `<div class="listing-pin-dot"></div>`;
+      const icon = L.divIcon({
+        className: 'listing-pin-wrap',
+        html: dotHTML,
+        iconSize: [12, 12],
+        iconAnchor: [6, 6],
+      });
+      const marker = L.marker([s.lat, s.lng], {
+        icon: icon,
+        pane: 'listing-pane',
+        riseOnHover: true,
+        keyboard: false,
+      });
+      marker.bindTooltip(
+        `<strong>${escapeHTML(s.suburb)}</strong> · ${count} listing${count > 1 ? 's' : ''} from ${listingPriceLabel(minRent)}/wk`,
+        {
+          direction: 'top',
+          offset: [0, -6],
+          opacity: 0.95,
+          sticky: false,
+        }
+      );
+      marker.on('click', () => {
+        if (map) map.flyTo([s.lat, s.lng], Math.max(LISTING_DETAIL_ZOOM + 0.5, zoom + 2.5), {
+          duration: 0.6,
+        });
+      });
+      marker.addTo(listingLayer);
+    }
+  }
+}
+
+// ============================================================================
+// Smart POI display — saliency ranking + grid-binning + user personalisation.
+//
+// The raw /pois endpoint gives us ~7000 places. A naive render puts colored
+// dots on top of dots on top of dots and reads as visual noise. Instead:
+//
+//   1. Each POI gets a salience score combining:
+//        - group rarity        (beaches > cinemas > restaurants)
+//        - user-dimension fit  (outdoor=80 user? parks + beaches surface)
+//        - suburb match score  (POIs in high-fit suburbs get a small boost)
+//      A POI whose group maps to the user's #1 dimension is flagged
+//      `_preferred` so the UI can visually star it.
+//
+//   2. At render time we viewport-cull, then grid-bin in **pixel space**
+//      at a zoom-aware cell size. Only the highest-salience POI per cell
+//      surfaces; losers get rolled into a "+N" badge on the winner. This
+//      guarantees no two markers overlap and the visible density scales
+//      with zoom.
+//
+//   3. Total markers are hard-capped at POI_RENDER_CAP so the DOM stays light.
+// ============================================================================
+
+async function loadPois() {
+  if (poiLoaded) { computePoiSalience(); indexPois(); schedulePoiRender(); return; }
+  try {
+    const r = await fetch(`${API_BASE}/pois`);
+    if (!r.ok) throw new Error(`pois HTTP ${r.status}`);
+    const j = await r.json();
+    allPois = j.pois || [];
+    poiLoaded = true;
+    computePoiSalience();
+    indexPois();
+    renderPoiFilter();
+    renderPois();
+  } catch (e) {
+    console.warn('POIs failed to load', e);
+  }
+}
+
+// Build the per-suburb buckets + AABB bounding boxes. Runs once on POI
+// load and again after salience is recomputed (so the sort stays fresh).
+// The hot render path walks this pre-sorted structure instead of scanning
+// all 12k POIs every frame.
+function indexPois() {
+  poisBySuburb.clear();
+  suburbBox.clear();
+  for (const p of allPois) {
+    const k = _suburbKey(p.s);
+    let list = poisBySuburb.get(k);
+    if (!list) { list = []; poisBySuburb.set(k, list); }
+    list.push(p);
+    let box = suburbBox.get(k);
+    if (!box) {
+      suburbBox.set(k, { minLat: p.la, maxLat: p.la, minLng: p.ln, maxLng: p.ln });
+    } else {
+      if (p.la < box.minLat) box.minLat = p.la;
+      if (p.la > box.maxLat) box.maxLat = p.la;
+      if (p.ln < box.minLng) box.minLng = p.ln;
+      if (p.ln > box.maxLng) box.maxLng = p.ln;
+    }
+  }
+  // Sort each bucket once by salience desc. Render picks top-K from the
+  // head, which is now O(K) per suburb instead of an O(N log N) sort per
+  // frame per viewport. Invalidate the icon cache too — focus/preferred
+  // state can shift when salience rebuilds.
+  for (const list of poisBySuburb.values()) {
+    list.sort((a, b) => b._salience - a._salience);
+  }
+}
+
+// Convert "#f97316" → "249 115 22" so it can be slotted into a CSS
+// `rgba(var(--poi-rgb), 0.12)`. Used once per icon-cache entry, not per
+// marker, so the parsing cost is negligible. Falls back to a slate triplet
+// if the input doesn't look like a 6-digit hex.
+function hexToRgbTriplet(hex) {
+  if (typeof hex !== 'string') return '15 23 42';
+  const m = hex.trim().match(/^#?([0-9a-fA-F]{6})$/);
+  if (!m) return '15 23 42';
+  const n = parseInt(m[1], 16);
+  return `${(n >> 16) & 0xff} ${(n >> 8) & 0xff} ${n & 0xff}`;
+}
+
+// Shared L.DivIcon per (group, inFocus, preferred) combination. There are
+// ~30 possible combinations across 10 groups × 2 focus × 2 preferred, so
+// the cache is tiny but reused across thousands of markers — creating a
+// divIcon per render was doing needless string/DOM template work.
+function getPoiIcon(group, inFocus, preferred) {
+  const stateKey = `${group}:${inFocus ? 1 : 0}:${preferred ? 1 : 0}`;
+  const hit = poiIconCache.get(stateKey);
+  if (hit) return hit;
+  const meta = POI_GROUPS[group];
+  if (!meta) return null;
+  const classes = ['poi-icon'];
+  if (inFocus)              classes.push('in-focus');
+  if (inFocus && preferred) classes.push('preferred');
+  const size = inFocus ? 30 : 24;
+  // Expose the category colour as both a hex var (for border/glyph) and a
+  // space-separated RGB triplet var (so `rgba(var(--poi-rgb), 0.12)` in CSS
+  // can paint the hover/in-focus halo in the same hue as the marker).
+  const rgb = hexToRgbTriplet(meta.color);
+  const html =
+      `<div class="${classes.join(' ')}" data-g="${group}" `
+    + `style="--poi-color:${meta.color};--poi-rgb:${rgb}">`
+    + `<span class="poi-icon-glyph">${poiIconSVG(group, inFocus ? 15 : 13)}</span>`
+    + `</div>`;
+  const icon = L.divIcon({
+    className: 'poi-pin',
+    html,
+    iconSize:   [size, size],
+    iconAnchor: [size / 2, size / 2],
+  });
+  poiIconCache.set(stateKey, icon);
+  return icon;
+}
+
+// rAF-coalesced render trigger. Attached to `move` so the map feels
+// continuous while panning — we repaint at most once per frame no matter
+// how many move events Leaflet fires. Skipped during zoom animation since
+// Leaflet transforms existing markers in CSS; we only need to re-grid at
+// zoomend when the cell size changes.
+function schedulePoiRender() {
+  if (_zoomAnimating) return;
+  if (_poiRafScheduled) return;
+  _poiRafScheduled = true;
+  requestAnimationFrame(() => {
+    _poiRafScheduled = false;
+    renderPois();
+  });
+}
+
+// Stable pseudorandom number from a string id — breaks salience ties
+// deterministically so the same POI always wins its cell across refreshes.
+function _poiHashJitter(id) {
+  let h = 2166136261;
+  for (let i = 0; i < id.length; i++) {
+    h ^= id.charCodeAt(i);
+    h = Math.imul(h, 16777619);
+  }
+  return ((h >>> 0) % 1024) / 1024;   // [0, 1)
+}
+
+function computePoiSalience() {
+  if (!allPois.length) return;
+  // User vector (neutral 50s if they haven't done the quiz yet)
+  const v = userVector || {
+    social_energy: 50, aesthetic: 50, pace: 50,
+    outdoor:       50, culinary:  50, community: 50,
+  };
+  // Build an index of suburb → match_score so we can boost POIs that sit
+  // in suburbs the user will actually want to live in.
+  const suburbMatch = new Map();
+  for (const s of (suburbs || [])) {
+    suburbMatch.set(s.suburb, s.match_score || 50);
+  }
+  // A POI is "preferred" when its dimension is one the user cares strongly
+  // about (≥ 65 on that dim). Multi-dim preference is on purpose — a user
+  // who loves both bars and galleries should see stars on both.
+  const PREFERRED_THRESHOLD = 65;
+
+  for (const p of allPois) {
+    const rarity     = POI_GROUP_RARITY[p.g]   ?? 0.5;
+    const pDim       = POI_GROUP_DIMENSION[p.g];
+    // user-dim fit in [-1, +1]  (50 = neutral)
+    const dimFit     = pDim ? ((v[pDim] - 50) / 50) : 0;
+    // suburb fit in [-1, +1]
+    const suburbFit  = ((suburbMatch.get(p.s) ?? 50) - 50) / 50;
+    const jitter     = _poiHashJitter(p.id) * 0.18;
+    // Weighted sum. Rarity dominates baseline (0–14 range); user preference
+    // and suburb quality shift which POIs bubble up; jitter breaks ties.
+    p._salience  = rarity * 10 + dimFit * 5 + suburbFit * 2 + jitter;
+    p._preferred = pDim && v[pDim] >= PREFERRED_THRESHOLD;
+  }
+}
+
+// Zoom → grid cell size in pixels. Summary views are sparse by design
+// (headline-per-suburb) so cells here are about marker spacing, not density
+// control. Focused views are dense, so cells shrink.
+// Grid cell size in pixels, driven by zoom and by whether we're in focused
+// mode. Default (hush) mode has one marker per suburb so cells can be
+// generous. Focused mode packs more into one suburb so cells go tighter.
+function _poiCellSize(zoom) {
+  const focused = focusedSuburb != null;
+  if (focused) {
+    if (zoom < 13) return 34;
+    if (zoom < 14) return 30;
+    if (zoom < 15) return 28;
+    return 26;
+  }
+  if (zoom < 12) return 72;
+  if (zoom < 13) return 58;
+  if (zoom < 14) return 48;
+  return 42;
+}
+
+// Lowercased suburb key — reused for focused-suburb comparisons and
+// per-suburb bucketing below.
+function _suburbKey(name) { return (name || '').trim().toLowerCase(); }
+
+function renderPois() {
+  if (!poiLayer || !map) return;
+  if (!poiLoaded) return;
+
+  const zoom = map.getZoom();
+  const focusKey = focusedSuburb ? _suburbKey(focusedSuburb) : null;
+  // Default view: hide entirely below the min-zoom threshold. Focused view
+  // (a drawer is open) always blooms regardless of zoom — the user chose
+  // that suburb, so show them its detail even at Sydney-wide view.
+  if (!focusKey && zoom < POI_MIN_ZOOM) {
+    if (activeMarkers.size) {
+      for (const entry of activeMarkers.values()) poiLayer.removeLayer(entry.marker);
+      activeMarkers.clear();
+    }
+    return;
+  }
+
+  // Salience may not have been computed yet (e.g. /pois returned before
+  // /match). Build it lazily, then refresh the per-suburb sort order.
+  if (allPois.length && allPois[0]._salience === undefined) {
+    computePoiSalience();
+    indexPois();
+  }
+
+  const bounds = map.getBounds();
+  const sw = bounds.getSouthWest();
+  const ne = bounds.getNorthEast();
+  const minLat = sw.lat, maxLat = ne.lat;
+  const minLng = sw.lng, maxLng = ne.lng;
+
+  // ---- 1. AABB-cull suburbs first, then walk pre-sorted POIs.
+  //   Default: top-1 in-viewport POI per suburb (≤45 markers at rest).
+  //   Focused: the one focused suburb blooms up to POI_FOCUSED_MAX; the
+  //            rest are skipped entirely so the focused area owns the stage.
+  // Grid-binning happens inline so each pixel cell keeps its top-salience
+  // POI and overlapping markers from neighbouring suburbs collapse cleanly.
+  const cell = _poiCellSize(zoom);
+  const cells = new Map();   // cellKey → POI
+  const headlineCap = POI_HEADLINE_MAX_DEFAULT;
+  const focusedCap  = POI_FOCUSED_MAX;
+
+  for (const [sKey, list] of poisBySuburb) {
+    const box = suburbBox.get(sKey);
+    if (!box) continue;
+    // AABB intersection test against the viewport — cheapest possible
+    // per-suburb cull. Skips ~90% of suburbs in any normal zoom level.
+    if (box.maxLat < minLat || box.minLat > maxLat) continue;
+    if (box.maxLng < minLng || box.minLng > maxLng) continue;
+
+    const isFocus = focusKey != null && sKey === focusKey;
+    if (focusKey != null && !isFocus) continue;
+
+    const cap = isFocus ? focusedCap : headlineCap;
+    let picked = 0;
+    for (let i = 0; i < list.length && picked < cap; i++) {
+      const p = list[i];
+      if (!activePoiGroups.has(p.g)) continue;
+      // Per-POI viewport check — cheap inline floats, no Leaflet object.
+      if (p.la < minLat || p.la > maxLat) continue;
+      if (p.ln < minLng || p.ln > maxLng) continue;
+      // Grid-bin in pixel space: highest-salience POI wins each cell.
+      const pt = map.project([p.la, p.ln], zoom);
+      const cKey = `${Math.floor(pt.x / cell)}:${Math.floor(pt.y / cell)}`;
+      const cur = cells.get(cKey);
+      if (!cur || p._salience > cur._salience) cells.set(cKey, p);
+      picked++;
+    }
+  }
+
+  // ---- 2. Hard-cap by salience. Skip the sort if we're already under cap.
+  let winners;
+  if (cells.size <= POI_RENDER_CAP) {
+    winners = [...cells.values()];
+  } else {
+    winners = [...cells.values()]
+      .sort((a, b) => b._salience - a._salience)
+      .slice(0, POI_RENDER_CAP);
+  }
+
+  // ---- 3. Diff against active markers. Stable markers (same id, same
+  // visual state) stay mounted — Leaflet transforms them on pan/zoom and
+  // there's zero DOM churn. Only entering/leaving markers touch the DOM.
+  const desired = new Map();   // poi.id → stateKey
+  for (const p of winners) {
+    const inFocus  = focusKey != null && _suburbKey(p.s) === focusKey;
+    const pref     = inFocus && p._preferred;
+    const stateKey = `${p.g}:${inFocus ? 1 : 0}:${pref ? 1 : 0}`;
+    desired.set(p.id, stateKey);
+  }
+
+  // Remove markers that are gone OR whose visual state has changed (a
+  // focus toggle flips inFocus, so we recreate to swap to the new icon).
+  for (const [id, entry] of activeMarkers) {
+    const wantState = desired.get(id);
+    if (wantState === undefined || wantState !== entry.stateKey) {
+      poiLayer.removeLayer(entry.marker);
+      activeMarkers.delete(id);
+    }
+  }
+
+  // Add new markers (or replacements for state-changed ones). Reuses
+  // cached icon instances, so each new marker is a single L.marker call
+  // plus tooltip bind — no string concatenation per render.
+  for (const p of winners) {
+    if (activeMarkers.has(p.id)) continue;
+    const meta = POI_GROUPS[p.g]; if (!meta) continue;
+    const inFocus = focusKey != null && _suburbKey(p.s) === focusKey;
+    const pref    = inFocus && !!p._preferred;
+    const icon    = getPoiIcon(p.g, inFocus, pref);
+    if (!icon) continue;
+    const size = inFocus ? 30 : 24;
+    const m = L.marker([p.la, p.ln], {
+      icon, pane: 'poi-pane', keyboard: false, riseOnHover: true,
+    });
+    const tip =
+        `<div class="tt-title">${escapeHTML(p.n)}</div>`
+      + `<div class="tt-meta">${meta.label.replace(/s$/,'')} · ${escapeHTML(p.s || '')}</div>`
+      + (pref
+          ? `<div class="tt-star">Matches your ${POI_GROUP_DIMENSION[p.g].replace('_',' ')}</div>`
+          : '');
+    m.bindTooltip(tip, {
+      direction: 'top', offset: [0, -(size / 2 + 2)],
+      opacity: 0.98, className: 'poi-tooltip',
+    });
+    // Click: open the drawer for this POI's suburb. A focused marker
+    // clicked again is a no-op (drawer already open for that suburb).
+    const suburbName = p.s;
+    m.on('click', () => { if (suburbName) openDrawer(suburbName); });
+    m.addTo(poiLayer);
+    activeMarkers.set(p.id, { marker: m, stateKey: `${p.g}:${inFocus ? 1 : 0}:${pref ? 1 : 0}` });
+  }
+}
+
+// Called by openDrawer/closeDrawer so the POI layer knows which suburb to
+// expand into full detail. Re-render immediately so the map reflects the
+// new focus before the drawer animation finishes.
+function setFocusedSuburb(name) {
+  focusedSuburb = name || null;
+  if (poiLoaded) renderPois();
+}
+
+function togglePoiGroup(g) {
+  if (activePoiGroups.has(g)) activePoiGroups.delete(g);
+  else activePoiGroups.add(g);
+  renderPois();
+  renderPoiFilter();
+}
+
+function renderPoiFilter() {
+  const root = document.getElementById('poiFilter');
+  if (!root) return;
+  const counts = {};
+  for (const p of allPois) counts[p.g] = (counts[p.g] || 0) + 1;
+  const chips = Object.keys(POI_GROUPS).map(g => {
+    const meta = POI_GROUPS[g];
+    const on = activePoiGroups.has(g);
+    const n = counts[g] || 0;
+    return `
+      <button class="poi-chip${on ? ' on' : ''}"
+              style="--chip-color:${meta.color}"
+              onclick="togglePoiGroup('${g}')"
+              title="${escapeAttr(meta.label)} · ${n} POIs"
+              aria-pressed="${on}">
+        <span class="poi-chip-icon">${poiIconSVG(g, 13)}</span>
+        <span class="poi-chip-label">${escapeHTML(meta.label)}</span>
+        <span class="poi-chip-count">${n}</span>
+      </button>`;
+  }).join('');
+  root.innerHTML = chips;
+}
+
+// ---- Detail modal -------------------------------------------------------
+function openListingModal(l) {
+  activeListing = l;
+  const overlay = document.getElementById('listingModal');
+  const imgEl   = document.getElementById('listingModalImg');
+  const priceEl = document.getElementById('listingModalPrice');
+  const addrEl  = document.getElementById('listingModalAddr');
+  const chipsEl = document.getElementById('listingModalChips');
+  const hEl     = document.getElementById('listingModalHeadline');
+  const dEl     = document.getElementById('listingModalDesc');
+  const ctaEl   = document.getElementById('listingModalCta');
+
+  // Image — keep the close button, swap the background image.
+  imgEl.style.backgroundImage = l.image ? `url('${l.image}')` : 'none';
+  imgEl.style.backgroundSize = 'cover';
+  imgEl.style.backgroundPosition = 'center';
+
+  priceEl.innerHTML = `${listingPriceLabel(l.rent_pw)}<span class="unit">/wk</span>`;
+  addrEl.textContent = l.address || '';
+
+  const chips = [];
+  chips.push(`<span class="listing-modal-chip"><span class="ico">◉</span>${l.beds} bed</span>`);
+  chips.push(`<span class="listing-modal-chip"><span class="ico">◎</span>${l.baths} bath</span>`);
+  if (l.parking != null) {
+    chips.push(`<span class="listing-modal-chip"><span class="ico">◌</span>${l.parking} car</span>`);
+  }
+  if (l.property_type) {
+    chips.push(`<span class="listing-modal-chip">${escapeHTML(l.property_type)}</span>`);
+  }
+  if (l.suburb) {
+    chips.push(`<span class="listing-modal-chip">${escapeHTML(l.suburb)}</span>`);
+  }
+  chipsEl.innerHTML = chips.join('');
+
+  hEl.textContent = l.headline || '';
+  dEl.textContent = l.description || '';
+
+  // Strip the hard-coded "View on realestate.com.au" text node so we can
+  // rebuild it — makes sure the arrow span stays in place and the href is
+  // fresh each open.
+  ctaEl.href = l.url || '#';
+  ctaEl.innerHTML = `View on realestate.com.au<span class="arrow">→</span>`;
+
+  overlay.classList.add('open');
+  overlay.setAttribute('aria-hidden', 'false');
+}
+
+function closeListingModal() {
+  const overlay = document.getElementById('listingModal');
+  if (!overlay) return;
+  overlay.classList.remove('open');
+  overlay.setAttribute('aria-hidden', 'true');
+  activeListing = null;
+}
+
+function onListingOverlayClick(event) {
+  // Only close if the user clicked the dimmed backdrop, not the card itself.
+  if (event.target && event.target.id === 'listingModal') {
+    closeListingModal();
+  }
+}
+
+// ---- Sidebar toggle -----------------------------------------------------
+function toggleListings() {
+  listingsVisible = !listingsVisible;
+  const tog    = document.getElementById('listingsToggle');
+  const status = document.getElementById('listingsToggleStatus');
+  if (tog) {
+    tog.classList.toggle('on', listingsVisible);
+    tog.setAttribute('aria-checked', listingsVisible ? 'true' : 'false');
+  }
+  if (status) {
+    status.textContent = listingsVisible
+      ? 'On · zoom in for details'
+      : 'Off · hidden';
+  }
+  // Either re-render (on) or drop the layer (off).
+  renderListings();
+}
+
+// ---- Global ESC-to-close key handler ------------------------------------
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && activeListing) {
+    closeListingModal();
+  }
+});
+
+// ========================================================================
+// Sidebar rendering
+// ========================================================================
+function renderTasteBars() {
+  if (!userVector) return;
+  const html = DIMENSIONS.map(d => {
+    const v = userVector[d];
+    return `
+      <div class="tbar-row">
+        <span class="tbar-name">${DIMENSION_LABELS[d]}</span>
+        <div class="tbar-track"><div class="tbar-fill" style="width:${v}%"></div></div>
+        <span class="tbar-val">${Math.round(v)}</span>
+      </div>
+    `;
+  }).join('');
+  document.getElementById('tasteBars').innerHTML = html;
+}
+
+function renderTopList() {
+  const budget = userBudget;
+  const sorted = [...suburbs]
+    .sort((a, b) => b.match_score - a.match_score)
+    .slice(0, 10);
+
+  const html = sorted.map((s, i) => {
+    const over = s.rent_2br > budget;
+    return `
+      <div class="ts-item" onclick='openDrawer(${JSON.stringify(s.suburb)})'>
+        <span class="rank">${String(i + 1).padStart(2, '0')}</span>
+        <span class="name">${escapeHTML(s.suburb)}</span>
+        <span class="rent">$${Math.round(s.rent_2br)}</span>
+        <span class="score ${over ? 'over' : ''}">${Math.round(s.match_score)}</span>
+      </div>
+    `;
+  }).join('');
+
+  const titleEl = document.getElementById('tsTitle');
+  if (titleEl) titleEl.textContent = `Your Top ${sorted.length}`;
+
+  const bodyEl = document.getElementById('tsBody');
+  if (bodyEl) bodyEl.innerHTML = html;
+
+  // Auto-open the panel on the first match response — the survey just ran
+  // and the user probably wants to see their ranked list without having to
+  // click to unfold. Subsequent calls don't re-open it (they may have
+  // deliberately collapsed it), so we flag the element after the first
+  // time this runs.
+  const panel = document.getElementById('topSuburbs');
+  if (panel && !panel.dataset.autoOpened) {
+    panel.classList.remove('collapsed');
+    panel.dataset.autoOpened = '1';
+  }
+
+  // Meta stats
+  const affordable = suburbs.filter(s => s.rent_2br <= budget).length;
+  const strong = suburbs.filter(s => s.rent_2br <= budget && s.match_score >= 80).length;
+  const champInBudget = sorted.find(s => s.rent_2br <= budget);
+  document.getElementById('in-budget').textContent = affordable;
+  document.getElementById('strong-fit').textContent = strong;
+  document.getElementById('champion').textContent = champInBudget ? champInBudget.suburb : '—';
+}
+
+function toggleTopSuburbs() {
+  const el = document.getElementById('topSuburbs');
+  if (el) el.classList.toggle('collapsed');
+}
+
+function renderAll() {
+  renderHeat();
+  renderLabels();
+  renderListings();
+  renderTopList();
+  // User vector / match scores changed — re-score POIs so the smart
+  // salience ranking reflects this user's preferences, then re-sort the
+  // per-suburb buckets so top-K picks still come straight from the head
+  // of the list. Without indexPois() here the render would pick from a
+  // stale sort order and "preferred" markers would take a frame to bubble.
+  if (poiLoaded) {
+    computePoiSalience();
+    indexPois();
+    renderPois();
+  }
+}
+
+// ========================================================================
+// Drawer
+// ========================================================================
+async function openDrawer(name) {
+  document.getElementById('drawer-content').innerHTML = `
+    <div style="padding:40px 10px;text-align:center;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.14em;">
+      <div style="display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--fg);border-radius:50%;animation:spin 0.8s linear infinite;margin-right:10px;vertical-align:middle;"></div>
+      Loading ${escapeHTML(name)}…
+    </div>`;
+  document.getElementById('drawer').classList.add('open');
+  document.getElementById('app').classList.add('drawer-open');
+  // Expand this suburb's POI cloud on the map so the user can explore it
+  // visually while the drawer's detail panel loads.
+  setFocusedSuburb(name);
+  // Persist the polygon outline while the drawer is open — the user loses
+  // hover as soon as they move the cursor into the drawer, and a flashing
+  // outline breaks the "this is the one you're looking at" contract.
+  setSelectedPolygon(name);
+
+  try {
+    const s = await fetchSuburb(name);
+    renderDrawer(s);
+  } catch (err) {
+    document.getElementById('drawer-content').innerHTML = `
+      <div style="padding:20px;color:var(--muted);">Couldn't load this suburb.<br><small>${err.message}</small></div>
+    `;
+  }
+}
+
+function renderDrawer(s) {
+  const budget = userBudget;
+  const inBudget = s.rent_2br <= budget;
+
+  // Pull the matching row from /match to get the personal match_score
+  const matchRow = suburbs.find(x => x.suburb === s.suburb);
+  const matchScore = matchRow ? Math.round(matchRow.match_score) : null;
+
+  const dimBars = DIMENSIONS.map(d => {
+    const v = s.dimensions[d];
+    const u = userVector ? userVector[d] : 50;
+    const fill = dimFillColour(v);
+    return `
+      <div class="dim-row">
+        <span class="dim-name">${DIMENSION_LABELS[d]}</span>
+        <div class="dim-track">
+          <div class="dim-fill" style="width:${v}%;background:${fill};"></div>
+          <div class="dim-user-marker" title="Your preference: ${Math.round(u)}" style="left:calc(${u}% - 1px)"></div>
+        </div>
+        <span class="dim-val">${Math.round(v)}</span>
+      </div>
+    `;
+  }).join('');
+
+  const posItems = s.positive && s.positive.length
+    ? s.positive.map(p => `<li class="pos"><span class="mark">+</span><span>${escapeHTML(p)}</span></li>`).join('')
+    : '<div class="empty">No standout positive signals for your profile here.</div>';
+
+  const negItems = s.negative && s.negative.length
+    ? s.negative.map(n => `<li class="neg"><span class="mark">−</span><span>${escapeHTML(n)}</span></li>`).join('')
+    : '<div class="empty">No meaningful mismatches.</div>';
+
+  // ---- AI block (LLM-written headline + summary + bullets) -----------
+  const aiBlock = renderAIBlock(s.ai);
+
+  // ---- Evidence chips (the hard counts the LLM was allowed to cite) --
+  const chipsHTML = renderEvidenceChips(s.evidence);
+
+  const listingsHTML = (s.listings || []).map(lst => `
+    <a class="listing-card" href="${escapeAttr(lst.url)}" target="_blank" rel="noopener">
+      <div class="listing-left">
+        <div class="listing-addr">${escapeHTML(lst.address)}</div>
+        <div class="listing-meta">${lst.beds}BR · ${lst.baths}BA · via Domain</div>
+      </div>
+      <div class="listing-price">$${lst.rent_pw}/wk</div>
+    </a>
+  `).join('');
+
+  document.getElementById('drawer-content').innerHTML = `
+    <div class="d-name">${escapeHTML(s.suburb)}</div>
+    <div class="d-tagline">${s.area_km2.toFixed(2)} km² · ${s.n_pois} POIs analysed</div>
+
+    <div class="d-score-block">
+      <div class="d-score-cell emphasis">
+        <div class="label">Match Score</div>
+        <div class="val">${matchScore !== null ? matchScore : '—'}</div>
+        <div class="val-sub">/100 for your profile</div>
+      </div>
+      <div class="d-score-cell">
+        <div class="label">Median 2BR rent</div>
+        <div class="val">$${Math.round(s.rent_2br)}</div>
+        <div class="val-sub">${inBudget ? 'within budget' : 'over budget'}</div>
+      </div>
+    </div>
+
+    ${aiBlock}
+
+    ${chipsHTML ? `
+    <div class="d-section">
+      <h3>What's actually here</h3>
+      ${chipsHTML}
+    </div>` : ''}
+
+    <div class="d-section">
+      <h3>Six-dimension profile</h3>
+      <div class="dim-bars">${dimBars}</div>
+      <p style="font-size:11px;color:var(--muted);margin-top:10px;font-family:'JetBrains Mono',monospace;">The black tick on each bar is your preference.</p>
+    </div>
+
+    <div class="d-section">
+      <h3>Signals in your favour</h3>
+      ${typeof posItems === 'string' && posItems.startsWith('<div')
+        ? posItems
+        : `<ul class="fact-list">${posItems}</ul>`}
+    </div>
+
+    <div class="d-section">
+      <h3>Where it might fall short</h3>
+      ${typeof negItems === 'string' && negItems.startsWith('<div')
+        ? negItems
+        : `<ul class="fact-list">${negItems}</ul>`}
+    </div>
+
+    <div class="d-section">
+      <h3>Listings · via Domain</h3>
+      <div class="listings-list">${listingsHTML}</div>
+    </div>
+  `;
+}
+
+function renderAIBlock(ai) {
+  if (!ai) return '';
+  const isLLM = ai.source === 'llm';
+  const headline = ai.headline || '';
+  const summary  = ai.summary  || '';
+  const positive = Array.isArray(ai.positive) ? ai.positive : [];
+  const negative = Array.isArray(ai.negative) ? ai.negative : [];
+  const posList = positive.length
+    ? `<ul class="ai-bullets">${positive.map(p => `<li class="pos">${escapeHTML(p)}</li>`).join('')}</ul>`
+    : '';
+  const negList = negative.length
+    ? `<ul class="ai-bullets">${negative.map(n => `<li class="neg">${escapeHTML(n)}</li>`).join('')}</ul>`
+    : '';
+  return `
+    <div class="ai-block">
+      <div class="ai-kicker${isLLM ? '' : ' template'}">
+        <span class="dot"></span>${isLLM ? 'AI take · grounded in real counts' : 'Template take'}
+      </div>
+      ${headline ? `<div class="ai-headline">${escapeHTML(headline)}</div>` : ''}
+      ${summary  ? `<div class="ai-summary">${escapeHTML(summary)}</div>` : ''}
+      ${posList}
+      ${negList}
+    </div>
+  `;
+}
+
+// Pretty-print every non-zero breakdown sub-category as a chip. This makes the
+// "what we know about this suburb" surface-area completely transparent — every
+// chip is something the LLM was allowed to cite, and only those things.
+const BREAKDOWN_LABELS_FE = {
+  beaches: 'beaches', parks: 'parks', trails: 'trails',
+  waterfront: 'waterfront', sports_grounds: 'sports grounds',
+  pools: 'pools', lookouts: 'lookouts', playgrounds: 'playgrounds',
+  bars: 'bars', pubs: 'pubs', nightclubs: 'nightclubs',
+  live_music: 'live music', breweries: 'breweries', karaoke: 'karaoke',
+  galleries: 'galleries', museums: 'museums',
+  vintage: 'vintage stores', indie_retail: 'indie retail',
+  cinemas: 'cinemas', bookstores: 'bookstores',
+  tattoo_piercing: 'tattoo studios',
+  restaurants: 'restaurants', cafes: 'cafés',
+  bakeries: 'bakeries', specialty_food: 'specialty food',
+  markets: 'markets', desserts: 'desserts',
+  libraries: 'libraries', schools: 'schools',
+  worship: 'places of worship', community_centers: 'community centres',
+  civic: 'civic buildings', medical: 'medical clinics',
+};
+
+function renderEvidenceChips(evidence) {
+  if (!evidence || !evidence.breakdowns) return '';
+  const flat = [];
+  for (const [, cats] of Object.entries(evidence.breakdowns)) {
+    for (const [k, v] of Object.entries(cats)) {
+      if (v > 0) flat.push({k, v});
+    }
+  }
+  if (Array.isArray(evidence.top_cuisines)) {
+    for (const c of evidence.top_cuisines.slice(0, 4)) {
+      if (c && c.count > 0) flat.push({k: c.cuisine, v: c.count, isCuisine: true});
+    }
+  }
+  if (!flat.length) return '';
+  flat.sort((a, b) => b.v - a.v);
+  const top = flat.slice(0, 14);
+  return `<div class="evidence-chips">${
+    top.map(it => {
+      const label = it.isCuisine
+        ? it.k.toLowerCase()
+        : (BREAKDOWN_LABELS_FE[it.k] || it.k.replace(/_/g, ' '));
+      return `<span class="evidence-chip"><strong>${it.v}</strong>${escapeHTML(label)}</span>`;
+    }).join('')
+  }</div>`;
+}
+
+function dimFillColour(v) {
+  // Solid charcoal fill, but tint toward green at the top end so strong
+  // dimensions pop even against the user marker.
+  if (v >= 75) return '#15803d';
+  if (v >= 55) return '#334155';
+  if (v >= 35) return '#64748b';
+  return '#94a3b8';
+}
+
+function closeDrawer() {
+  document.getElementById('drawer').classList.remove('open');
+  document.getElementById('app').classList.remove('drawer-open');
+  setFocusedSuburb(null);   // collapse the map back to headline-per-suburb
+  setSelectedPolygon(null); // release the persistent polygon highlight
+}
+
+// ========================================================================
+// Input handlers
+// ========================================================================
+// ---- Budget: slider and manual entry stay in sync ---------------------
+// The slider's clamped to 300-2000 but the numeric input accepts anything
+// from 100 to 5000 — typed values outside the slider range still flow to
+// the matcher. This lets someone cap out the slider for the heatmap's
+// distribution AND enter, say, $1800 exactly for their real budget.
+const BUDGET_MIN = 100;
+const BUDGET_MAX = 5000;
+const BUDGET_SLIDER_MIN = 300;
+const BUDGET_SLIDER_MAX = 2000;
+
+function clampBudget(n) {
+  if (isNaN(n)) return userBudget;
+  return Math.max(BUDGET_MIN, Math.min(BUDGET_MAX, Math.round(n)));
+}
+
+function applyBudget(newBudget, opts) {
+  opts = opts || {};
+  userBudget = newBudget;
+  // Sidebar widgets
+  const pill   = document.getElementById('budget-val');
+  const slider = document.getElementById('budget');
+  const input  = document.getElementById('budgetInput');
+  if (pill)   pill.textContent = '$' + newBudget;
+  if (slider && opts.source !== 'slider') {
+    slider.value = Math.max(BUDGET_SLIDER_MIN, Math.min(BUDGET_SLIDER_MAX, newBudget));
+  }
+  if (input && opts.source !== 'input') {
+    input.value = newBudget;
+  }
+
+  if (debounceBudget) clearTimeout(debounceBudget);
+  debounceBudget = setTimeout(async () => {
+    try {
+      if (!matchResponse) return;  // pre-quiz — nothing to refetch yet
+      await fetchMatch(userBudget);
+      renderAll();
+    } catch (err) {
+      console.error('Match refetch failed:', err);
+    }
+  }, 250);
+}
+
+function onBudgetSlider(raw) { applyBudget(clampBudget(parseInt(raw)), {source: 'slider'}); }
+function onBudgetTyped(raw)  { applyBudget(clampBudget(parseInt(raw)), {source: 'input'}); }
+
+// ---- Quiz final-step budget — same pattern, pre-/match state ----------
+function onQuizBudgetSlider(raw) {
+  const v = clampBudget(parseInt(raw));
+  userBudget = v;
+  const inp = document.getElementById('quizBudgetInput');
+  const val = document.getElementById('quizBudgetVal');
+  if (val) val.textContent = '$' + v;
+  if (inp) inp.value = v;
+}
+function onQuizBudgetTyped(raw) {
+  const v = clampBudget(parseInt(raw));
+  userBudget = v;
+  const sld = document.getElementById('quizBudget');
+  const val = document.getElementById('quizBudgetVal');
+  if (val) val.textContent = '$' + v;
+  if (sld) sld.value = Math.max(BUDGET_SLIDER_MIN, Math.min(BUDGET_SLIDER_MAX, v));
+}
+
+// Legacy shim — in case anything else still calls onBudgetChange().
+function onBudgetChange() {
+  const el = document.getElementById('budget');
+  if (el) onBudgetSlider(el.value);
+}
+
+// ========================================================================
+// Utils
+// ========================================================================
+function escapeHTML(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
+function escapeAttr(str) { return escapeHTML(str); }
+
+// ========================================================================
+// Boot
+// ========================================================================
+bootQuiz();
+</script>
+
+<!-- ============== LISTING DETAIL MODAL ============== -->
+<div class="listing-modal-overlay" id="listingModal" role="dialog" aria-modal="true" aria-hidden="true" onclick="onListingOverlayClick(event)">
+  <div class="listing-modal" id="listingModalCard">
+    <div class="listing-modal-img" id="listingModalImg">
+      <button class="listing-modal-close" type="button" aria-label="Close" onclick="closeListingModal()">×</button>
+    </div>
+    <div class="listing-modal-body">
+      <div class="listing-modal-price" id="listingModalPrice">$0<span class="unit">/wk</span></div>
+      <div class="listing-modal-addr" id="listingModalAddr"></div>
+      <div class="listing-modal-chips" id="listingModalChips"></div>
+      <div class="listing-modal-headline" id="listingModalHeadline"></div>
+      <div class="listing-modal-desc" id="listingModalDesc"></div>
+      <a class="listing-modal-cta" id="listingModalCta" target="_blank" rel="noopener">
+        View on realestate.com.au<span class="arrow">→</span>
+      </a>
+      <div class="listing-modal-footnote">Sample listing · live results filtered to this suburb &amp; price</div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

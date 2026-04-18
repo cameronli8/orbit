@@ -1,5 +1,5 @@
 """
-build.py  —  the Homing feature-engineering pipeline.
+build.py  —  the Orbit feature-engineering pipeline.
 
 Reads:   data/raw/fsq_sydney.parquet       (POI-level)
 Writes:  data/features/suburbs.parquet     (one row per suburb, scored)
@@ -20,6 +20,7 @@ Every score traces back to a sum or count a judge can reproduce with a SQL
 query against fsq_sydney.parquet.
 """
 
+import json
 import math
 from pathlib import Path
 from collections import Counter
@@ -38,6 +39,8 @@ from categories import (
     LATE_NIGHT_CATEGORIES,
     CUISINE_KEYWORDS,
     KNOWN_CHAIN_NAMES,
+    DIMENSION_BREAKDOWNS,
+    count_breakdowns,
     normalize_label,
     label_matches_any,
     extract_cuisine,
@@ -139,6 +142,22 @@ def compute_suburb_features(poi_df: pd.DataFrame, suburb: dict) -> dict:
             cuisine_counter[c] += 1
     culinary_entropy = shannon_entropy(cuisine_counter)
     n_cuisines = len(cuisine_counter)
+    # Top cuisines with counts, ranked — lets explanations cite what's
+    # actually on the street rather than a generic "varied" claim.
+    top_cuisines = [
+        {"cuisine": c, "count": n}
+        for c, n in cuisine_counter.most_common(6)
+    ]
+
+    # --- Sub-category breakdowns --------------------------------------------
+    # For each dimension we count POIs per sub-category (e.g. outdoor breaks
+    # into beaches/parks/trails/pools/...). This is what fixes the
+    # "beaches in Chippendale" bug: every fact we generate downstream cites a
+    # breakdown key that actually has non-zero count in this suburb.
+    breakdowns = {
+        dim: count_breakdowns(all_labels, buckets)
+        for dim, buckets in DIMENSION_BREAKDOWNS.items()
+    }
 
     # --- Densities (POIs per km²) -------------------------------------------
     # Use log1p to soften the heavy tail (CBD otherwise dominates everything).
@@ -179,6 +198,11 @@ def compute_suburb_features(poi_df: pd.DataFrame, suburb: dict) -> dict:
         "late_night_share": late_night_share,
         "indie_ratio": indie_ratio,
         "culinary_entropy": culinary_entropy,
+        # Stored as JSON strings so Parquet-of-pandas stays happy with nested
+        # data without us reaching for Arrow's struct types. Matchers just
+        # json.loads these on read.
+        "top_cuisines_json": json.dumps(top_cuisines),
+        "breakdowns_json": json.dumps(breakdowns),
     }
 
 

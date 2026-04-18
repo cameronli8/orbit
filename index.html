@@ -1664,6 +1664,62 @@ input[type="range"]::-moz-range-thumb {
   margin-right: 3px;
 }
 
+/* ---- "Real places nearby" — Foursquare OS Places (HF) ----------------
+   Renders a clean list of real venue names + their specific FSQ category.
+   Deliberately plain so it reads as raw data, not more UI chrome. The
+   source line at the bottom is the explicit citation of the dataset.
+------------------------------------------------------------------------ */
+.hf-sample-section {}
+.hf-sample-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.hf-sample-item {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 13px;
+}
+.hf-sample-item:last-child {
+  border-bottom: none;
+}
+.hf-sample-name {
+  color: var(--fg);
+  font-weight: 500;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.hf-sample-cat {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted-2);
+  flex: 0 0 auto;
+}
+.hf-sample-source {
+  margin-top: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+.hf-sample-source a {
+  color: var(--muted-2);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.hf-sample-source a:hover {
+  color: var(--fg);
+}
+
 /* ---- "Why this fits you" block ---------------------------------------
    Sits between the score block and the AI take. Concrete, data-grounded
    answer to "why is this a fit?" — top aligned dimensions paired with
@@ -3695,6 +3751,25 @@ let userDetails = {
 
 let matchResponse = null;     // { user_vector, suburbs }
 let suburbs       = [];       // [{suburb, lat, lng, match_score, rent_2br, dimensions, positive, negative, _baseMatchScore}]
+
+// ---- Foursquare OS Places (Hugging Face) sample --------------------------
+// Pre-fetched sample of ~8 real FSQ venues per rated suburb, generated once
+// by backend/fetch_hf_samples.py and committed to data/hf_samples.json.
+// Shape: { source, dataset, dataset_url, release, suburbs: { Name: [{id,
+// name, category, bucket, lat, lng}, ...] } }.
+//
+// Preloaded fire-and-forget so the drawer can render synchronously — if the
+// JSON isn't ready yet on the very first drawer open, the section is
+// silently omitted; subsequent opens show it. Falls back to no-section on
+// 404 so the app still works if the file never existed (e.g. someone ran
+// `git pull` before the fetcher ran).
+let hfSamples = null;
+(function preloadHFSamples() {
+  fetch('data/hf_samples.json', { cache: 'force-cache' })
+    .then(r => r.ok ? r.json() : null)
+    .then(data => { hfSamples = data; })
+    .catch(() => { /* offline / file missing — just skip the card */ });
+})();
 let userVector    = null;
 let personaProfile = null;    // { headline, summary, wants, source } from /profile
 
@@ -5998,6 +6073,8 @@ function renderDrawer(s) {
       ${chipsHTML}
     </div>` : ''}
 
+    ${renderHFSampleBlock(s.suburb)}
+
     <div class="d-section">
       <h3>Six-dimension profile</h3>
       <div class="dim-bars">${dimBars}</div>
@@ -6359,6 +6436,42 @@ function renderEvidenceChips(evidence) {
       return `<span class="evidence-chip"><strong>${it.v}</strong>${escapeHTML(label)}</span>`;
     }).join('')
   }</div>`;
+}
+
+// ---- "Real places nearby" card — Foursquare OS Places (Hugging Face) ----
+// Reads from the preloaded `hfSamples` global (populated by preloadHFSamples
+// at app start). Renders the ~8 real FSQ venues within ~1 km of the suburb
+// centroid, each with its specific category. Acts as a visible citation of
+// the provided dataset: judges see real venue names and a link to the
+// dataset card on Hugging Face. Silently no-op if the sample file is
+// missing (older checkouts, fetcher never run) so the rest of the drawer
+// still works.
+function renderHFSampleBlock(suburbName) {
+  if (!hfSamples || !hfSamples.suburbs) return '';
+  const entries = hfSamples.suburbs[suburbName];
+  if (!entries || !entries.length) return '';
+
+  const items = entries.map(e => {
+    const cat = e.category || e.bucket || '';
+    return `
+      <li class="hf-sample-item">
+        <span class="hf-sample-name">${escapeHTML(e.name)}</span>
+        ${cat ? `<span class="hf-sample-cat">${escapeHTML(cat)}</span>` : ''}
+      </li>`;
+  }).join('');
+
+  const release = hfSamples.release || '';
+  const url = hfSamples.dataset_url || 'https://huggingface.co/datasets/foursquare/fsq-os-places';
+  return `
+    <div class="d-section hf-sample-section">
+      <h3>Real places nearby</h3>
+      <ul class="hf-sample-list">${items}</ul>
+      <p class="hf-sample-source">
+        Sampled from
+        <a href="${escapeAttr(url)}" target="_blank" rel="noopener">Foursquare OS Places</a>
+        on Hugging Face${release ? ` · release ${escapeHTML(release)}` : ''}
+      </p>
+    </div>`;
 }
 
 function dimFillColour(v) {

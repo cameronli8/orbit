@@ -85,7 +85,7 @@ python3 build.py       # computes six dimensions per suburb with percentile-rank
 
 `build.py` accepts any Parquet with the Foursquare columns `name, locality, region, fsq_category_labels, chains, latitude, longitude`. Drop it at `data/raw/fsq_sydney.parquet` and re-run. The mock generator matches this schema exactly, so nothing else changes.
 
-For the real dataset, use `huggingface-cli login` with a token that has access to the gated `foursquare/fsq-os-places` repo, then run `polars_setup.py` with the AU/NSW filter.
+For the real dataset, set `HF_TOKEN` in `.env` (requires accepting terms on the gated `foursquare/fsq-os-places` repo) and run `python3 backend/fetch_hf_samples.py`. That ships ~8 real venues per rated suburb into `data/hf_samples.json`, which the drawer surfaces as a "Real places nearby" card. The scoring pipeline stays on the OSM-derived `fsq_sydney.parquet`.
 
 ## Serve
 

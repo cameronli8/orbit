@@ -2,8 +2,30 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>ORBIT — Find your Sydney</title>
+<meta name="description" content="Sydney renter suburb-matching that fits who you are, not just what you can afford.">
+
+<!-- PWA: manifest + platform theming -->
+<link rel="manifest" href="/manifest.json">
+<meta name="theme-color" content="#0a0a0a">
+<meta name="color-scheme" content="light">
+
+<!-- iOS / Safari PWA hints -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Orbit">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+
+<!-- Favicons -->
+<link rel="icon" type="image/png" sizes="32x32" href="/icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="192x192" href="/icons/icon-192.png">
+
+<!-- Open Graph / Twitter -->
+<meta property="og:title" content="Orbit — Find your Sydney">
+<meta property="og:description" content="Match Sydney suburbs to who you are, not just your budget.">
+<meta property="og:type" content="website">
+<meta property="og:image" content="/icons/icon-512.png">
 
 <!-- Fonts -->
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -3605,7 +3627,10 @@ wᵢ = exp(−dᵢ² / (2σ²)), σ ≈ 2.4 km</span>
 // ========================================================================
 // Config
 // ========================================================================
-const API_BASE = 'http://localhost:8000';
+// Empty string = same-origin relative. Backend serves index.html directly, so
+// all fetches hit the same host:port. For pure file:// development, set to
+// 'http://localhost:8000'.
+const API_BASE = '';
 const DIMENSIONS = ['social_energy','aesthetic','pace','outdoor','culinary','community'];
 const DIMENSION_LABELS = {
   social_energy: 'Social energy',
@@ -6711,5 +6736,44 @@ bootQuiz();
     </div>
   </div>
 </div>
+
+<script>
+// ---------------------------------------------------------------------------
+// Service worker registration.
+//
+// Only registers in secure contexts (HTTPS or localhost) — otherwise browsers
+// won't let the SW install. Skipped on file:// so local dev without the
+// backend still works. `updatefound` + `controllerchange` together give us a
+// soft "new version available" flow without forcing a reload mid-session.
+// ---------------------------------------------------------------------------
+if ('serviceWorker' in navigator && window.location.protocol !== 'file:') {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' })
+      .then((reg) => {
+        // When a new SW finishes installing, activate it on next navigation.
+        reg.addEventListener('updatefound', () => {
+          const installing = reg.installing;
+          if (!installing) return;
+          installing.addEventListener('statechange', () => {
+            if (installing.state === 'installed' && navigator.serviceWorker.controller) {
+              // Quietly take over — version-scoped caches mean no broken state.
+              reg.waiting?.postMessage({ type: 'SKIP_WAITING' });
+            }
+          });
+        });
+      })
+      .catch((err) => console.warn('[orbit] SW registration failed:', err));
+
+    // Auto-reload once when a new SW takes control, so the UI always matches
+    // the cached assets. Guard against an infinite reload loop with a flag.
+    let reloaded = false;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (reloaded) return;
+      reloaded = true;
+      window.location.reload();
+    });
+  });
+}
+</script>
 </body>
 </html>

@@ -29,7 +29,8 @@ from pathlib import Path
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from quiz import QUESTIONS, score_user, quiz_payload, DIMENSIONS
@@ -398,10 +399,10 @@ def get_polygons():
 
 
 # ---------------------------------------------------------------------------
-# Optional root index so hitting localhost:8000 in a browser isn't a 404.
+# API metadata (was at "/" — moved to "/api" so the root can serve the SPA).
 # ---------------------------------------------------------------------------
-@app.get("/")
-def index():
+@app.get("/api")
+def api_info():
     return {
         "name": "Orbit API",
         "endpoints": [
@@ -412,3 +413,36 @@ def index():
         "polygons_loaded": _load_geojson() is not None,
         "llm": llm_status(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Static frontend mount.
+#
+# Serves `index.html`, the service worker, the manifest, icons, and any other
+# assets that live in the project root (one level up from `backend/`). Mounted
+# LAST so all real API routes win path-resolution before the catch-all kicks
+# in. `html=True` makes "/" auto-resolve to index.html.
+# ---------------------------------------------------------------------------
+FRONTEND_DIR = Path(__file__).parent.parent
+
+
+@app.get("/sw.js")
+def service_worker():
+    """Service workers must be served from the same origin and scope they
+    control. Hand-rolled response so we can set the right content type and
+    avoid any caching headers that would freeze users on a stale SW."""
+    sw_path = FRONTEND_DIR / "sw.js"
+    if not sw_path.exists():
+        raise HTTPException(status_code=404, detail="sw.js not found")
+    return FileResponse(
+        sw_path,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"},
+    )
+
+
+app.mount(
+    "/",
+    StaticFiles(directory=str(FRONTEND_DIR), html=True),
+    name="frontend",
+)

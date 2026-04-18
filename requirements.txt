@@ -1,0 +1,3 @@
+# Root requirements — forwards to backend/requirements.txt so Railway's
+# Nixpacks builder auto-detects the Python project at repo root.
+-r backend/requirements.txt

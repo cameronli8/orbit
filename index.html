@@ -673,11 +673,15 @@ input[type="range"]::-moz-range-thumb {
   opacity: 1;
   transition: max-height 0.3s var(--ease), opacity 0.25s var(--ease);
 }
-.legend.collapsed { padding: 10px 14px; }
+.legend.collapsed { padding: 10px 14px; width: auto; max-width: max-content; }
 .legend.collapsed .legend-head { margin-bottom: 0; }
 .legend.collapsed .legend-caret { transform: rotate(-90deg); }
 .legend.collapsed .legend-body {
+  /* width: 0 is the important one — without it, the .legend-bar inside still
+     reserves 200px of layout width, which pushes the collapsed legend pill
+     wider than the head row and makes it overlap the POI filter wrap. */
   max-height: 0;
+  width: 0;
   opacity: 0;
   pointer-events: none;
 }
@@ -1087,10 +1091,13 @@ input[type="range"]::-moz-range-thumb {
   z-index: 500;
   transition: left 0.3s var(--ease);
 }
-/* When the legend is in its collapsed pill state, reclaim the 260px it
-   was using so the POI filter row has more room to wrap without clipping.
-   The .legend-collapsed flag is set on .map-wrap by toggleLegend(). */
-.map-wrap.legend-collapsed .poi-filter-wrap { left: 130px; }
+/* When the legend is in its collapsed pill state, reclaim most of the 260px
+   it was using so the POI filter row has more room to wrap without clipping.
+   We leave ~180px for the collapsed pill's breathing room — its width varies
+   with the title ("Fit Score" vs "Commute time") plus caret + padding, and
+   180px keeps the POI filter's first chip clear of the pill at every zoom
+   state. The .legend-collapsed flag is set on .map-wrap by toggleLegend(). */
+.map-wrap.legend-collapsed .poi-filter-wrap { left: 180px; }
 .poi-filter-title {
   font-family: 'JetBrains Mono', monospace;
   font-size: 9.5px;
@@ -4891,8 +4898,10 @@ const POI_MIN_ZOOM = 13.5;
 // Hard cap on how many POI markers we'll render at once. Keeps the DOM light
 // and guarantees the map never looks like confetti.
 const POI_RENDER_CAP = 160;
-// Default (un-focused) suburbs get this many headline POIs each. Strictly 1 —
-// the map at rest reads as "one iconic place per suburb", not "pin soup".
+// Default (un-focused) suburbs get this many headline POIs *per active group*.
+// Strictly 1 — the map at rest reads as "one iconic place per group per suburb",
+// not "pin soup". The global POI_RENDER_CAP above trims total markers across
+// Sydney, so dialing up the group count never explodes the DOM.
 const POI_HEADLINE_MAX_DEFAULT = 1;
 // A focused suburb (drawer open) blooms to this many. Kept tight so even in
 // focus the map stays readable.
@@ -5767,24 +5776,41 @@ function renderPois() {
   // both were toggled on simultaneously.
   const cell = _poiCellSize(zoom);
   const cells = new Map();   // cellKey (x:y:group) → POI
-  const headlineCap = POI_HEADLINE_MAX_DEFAULT;
-  const focusedCap  = POI_FOCUSED_MAX;
+  const headlinePerGroup = POI_HEADLINE_MAX_DEFAULT;
+  const focusedCap       = POI_FOCUSED_MAX;
+  const nActiveGroups    = Math.max(1, activePoiGroups.size);
 
   for (const [sKey, list] of poisBySuburb) {
     const isFocus = focusKey != null && sKey === focusKey;
     if (focusKey != null && !isFocus) continue;
 
-    const cap = isFocus ? focusedCap : headlineCap;
+    // Per-group-per-suburb cap — this is what prevents one group from
+    // monopolising a suburb's picks when multiple categories are active.
+    // Without this, a single sorted list with the default per-suburb cap
+    // of 1 would render 45 markers across Sydney all belonging to whichever
+    // group's rarity/dimFit priors rank highest — so "Restaurants + Cafés
+    // + Bars + Gyms" on the toolbar would paint the map with e.g. only
+    // cafés. Per-group caps let each active category land at least one
+    // marker per suburb (when available) without ever exceeding the total.
+    const perGroupCap = isFocus
+      ? Math.max(1, Math.ceil(focusedCap / nActiveGroups))
+      : headlinePerGroup;
+    const totalCap    = isFocus ? focusedCap : headlinePerGroup * nActiveGroups;
+
+    const perGroupPicks = new Map();
     let picked = 0;
-    for (let i = 0; i < list.length && picked < cap; i++) {
+    for (let i = 0; i < list.length && picked < totalCap; i++) {
       const p = list[i];
       if (!activePoiGroups.has(p.g)) continue;
+      const gPicked = perGroupPicks.get(p.g) || 0;
+      if (gPicked >= perGroupCap) continue;
       // Grid-bin in pixel space, keyed per group so different categories
       // don't evict each other. Highest-salience POI wins each per-group cell.
       const pt = map.project([p.la, p.ln], zoom);
       const cKey = `${Math.floor(pt.x / cell)}:${Math.floor(pt.y / cell)}:${p.g}`;
       const cur = cells.get(cKey);
       if (!cur || p._salience > cur._salience) cells.set(cKey, p);
+      perGroupPicks.set(p.g, gPicked + 1);
       picked++;
     }
   }

@@ -2068,7 +2068,7 @@ input[type="range"]::-moz-range-thumb {
   transform: translate(calc(-50% + var(--px, 0px)), calc(-50% + var(--py, 0px)));
   transition: transform 0.5s var(--ease);
   pointer-events: none;
-  opacity: 0.45;
+  opacity: 0.6;
   z-index: 0;
 }
 .landing-bg-orbits svg {
@@ -3412,7 +3412,7 @@ body.edit-mode .edit-mode-banner       { display: flex; }
     <p class="landing-tagline">Redefine living.</p>
     <p class="landing-sub">
       A map drawn around who you are — not just what you can afford.
-      Seven questions, 45 Sydney suburbs, one honest answer.
+      Seven questions, all of Sydney mapped, one honest answer.
     </p>
 
     <button class="landing-cta" type="button" onclick="enterApp()">
@@ -3428,7 +3428,7 @@ body.edit-mode .edit-mode-banner       { display: flex; }
     </button>
 
     <div class="landing-meta">
-      <span>45 suburbs</span>
+      <span>Sydney-wide</span>
       <span class="sep"></span>
       <span>Real-world data</span>
       <span class="sep"></span>
@@ -3557,7 +3557,7 @@ body.edit-mode .edit-mode-banner       { display: flex; }
     <div class="header-meta">
       <span class="pill">Sydney, NSW</span>
       <span class="pill live">Data Live · 2026-Q1</span>
-      <span class="pill" id="pill-pois">45 suburbs</span>
+      <span class="pill" id="pill-pois">Sydney-wide</span>
     </div>
   </header>
 
@@ -3735,7 +3735,7 @@ body.edit-mode .edit-mode-banner       { display: flex; }
         </summary>
         <div class="legend-explainer-body">
           <ol>
-            <li>Each of 45 Sydney suburbs has a 6-D <span class="mono">taste vector</span> over <em>social_energy, aesthetic, pace, outdoor, culinary, community</em>, built from OSM POI density + per-dimension percentile rank.</li>
+            <li>Every Sydney suburb has a 6-D <span class="mono">taste vector</span> over <em>social_energy, aesthetic, pace, outdoor, culinary, community</em>, built from OSM POI density + per-dimension percentile rank.</li>
             <li>Your quiz seeds a parallel 6-D user vector. Match score is <span class="mono">mean-centred cosine similarity</span> between the two, rescaled to 0–100, then softly gated by a logistic function of <span class="mono">rent_2br / weekly_budget</span> (0.3–1.0 multiplier; budget-over suburbs fade but don't disappear).</li>
             <li>The heatmap is a Leaflet <span class="mono">GridLayer</span>. For every ~5 px sample in each 256&times;256 tile we evaluate a Gaussian KDE over all 45 suburb centroids:
               <span class="formula">fit(p) = Σ wᵢ · scoreᵢ / Σ wᵢ
@@ -4084,7 +4084,7 @@ function quizBack() {
 
 async function submitQuiz() {
   document.getElementById('quizBody').innerHTML = `
-    <div class="quiz-loading"><span class="spinner"></span>Scoring 45 suburbs against your vector…</div>
+    <div class="quiz-loading"><span class="spinner"></span>Scoring Sydney against your vector…</div>
   `;
   try {
     await fetchMatch(userBudget);
@@ -6824,16 +6824,18 @@ function setupLandingParallax() {
   if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
   if (window.matchMedia && window.matchMedia('(hover: none)').matches) return;
 
-  const MAX = 24; // px cap on either axis
+  const MAX = 48; // px cap on either axis — tuned to be noticeable without
+                  // dragging the rings off the wordmark on narrow viewports.
   let raf = null;
   let targetX = 0, targetY = 0;
   let curX = 0, curY = 0;
 
   function tick() {
     // Lerp toward the target so the drift looks physical rather than
-    // glued-to-cursor. 0.08 ≈ 120ms settle time at 60fps.
-    curX += (targetX - curX) * 0.08;
-    curY += (targetY - curY) * 0.08;
+    // glued-to-cursor. 0.11 ≈ 90ms settle time at 60fps — snappier than
+    // the original 0.08 so the parallax reads as responsive.
+    curX += (targetX - curX) * 0.11;
+    curY += (targetY - curY) * 0.11;
     orbits.style.setProperty('--px', curX.toFixed(2) + 'px');
     orbits.style.setProperty('--py', curY.toFixed(2) + 'px');
     if (Math.abs(targetX - curX) > 0.1 || Math.abs(targetY - curY) > 0.1) {

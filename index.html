@@ -550,15 +550,26 @@ input[type="range"]::-moz-range-thumb {
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
   border: 1px solid rgba(255, 255, 255, 0.7);
-  padding: 18px 22px;
+  padding: 14px 18px;
   border-radius: var(--r-lg);
   pointer-events: auto;
   box-shadow: var(--shadow-lg);
   animation: fadeSlideIn 0.6s var(--ease) backwards;
+  transition: padding 0.3s var(--ease);
 }
 @keyframes fadeSlideIn {
   from { opacity: 0; transform: translateY(-8px); }
   to { opacity: 1; transform: translateY(0); }
+}
+/* Collapsible header — title + caret sit on one row; the body (.overlay-main)
+   collapses to zero height when the card is in its .collapsed state. */
+.overlay-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
 }
 .overlay-title {
   font-family: 'JetBrains Mono', monospace;
@@ -566,13 +577,33 @@ input[type="range"]::-moz-range-thumb {
   text-transform: uppercase;
   letter-spacing: 0.14em;
   color: var(--muted);
-  margin-bottom: 10px;
+  margin-bottom: 0;
+  flex: 1;
 }
+.overlay-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px; height: 20px;
+  border-radius: 6px;
+  background: var(--line-soft);
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+  transition: transform 0.3s var(--ease), background 0.2s var(--ease);
+}
+.overlay-head:hover .overlay-caret { background: var(--fg); color: var(--surface); }
 .overlay-main {
   font-size: 16.5px;
   font-weight: 500;
   letter-spacing: -0.01em;
   line-height: 1.4;
+  margin-top: 10px;
+  max-height: 200px;
+  overflow: hidden;
+  opacity: 1;
+  transition: max-height 0.3s var(--ease), opacity 0.25s var(--ease), margin-top 0.3s var(--ease);
 }
 .overlay-main strong {
   background: var(--fg);
@@ -580,6 +611,14 @@ input[type="range"]::-moz-range-thumb {
   padding: 2px 8px;
   border-radius: var(--r-sm);
   font-weight: 600;
+}
+.overlay-card.collapsed { padding: 10px 14px; }
+.overlay-card.collapsed .overlay-caret { transform: rotate(-90deg); }
+.overlay-card.collapsed .overlay-main {
+  max-height: 0;
+  opacity: 0;
+  margin-top: 0;
+  pointer-events: none;
 }
 
 .legend {
@@ -597,8 +636,51 @@ input[type="range"]::-moz-range-thumb {
   letter-spacing: 0.1em;
   border-radius: var(--r-lg);
   box-shadow: var(--shadow-md);
+  transition: padding 0.3s var(--ease), width 0.3s var(--ease);
 }
-.legend-title { color: var(--muted); margin-bottom: 10px; }
+/* Clickable title row — title text + caret. When the legend collapses, the
+   body (bar / labels / mode toggle / layer switch / explainer) hides and the
+   panel shrinks to a small pill so the map gets more breathing room. */
+.legend-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  cursor: pointer;
+  user-select: none;
+  margin-bottom: 10px;
+}
+.legend-title { color: var(--muted); margin-bottom: 0; flex: 1; }
+.legend-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px; height: 20px;
+  border-radius: 6px;
+  background: var(--line-soft);
+  color: var(--fg);
+  font-size: 11px;
+  font-weight: 600;
+  flex-shrink: 0;
+  transition: transform 0.3s var(--ease), background 0.2s var(--ease);
+}
+.legend-head:hover .legend-caret { background: var(--fg); color: var(--surface); }
+/* Collapsed state — body hidden, only the title row remains. The switch
+   between bottom-left "big panel" and "small pill" is a single class flip. */
+.legend-body {
+  overflow: hidden;
+  max-height: 600px;
+  opacity: 1;
+  transition: max-height 0.3s var(--ease), opacity 0.25s var(--ease);
+}
+.legend.collapsed { padding: 10px 14px; }
+.legend.collapsed .legend-head { margin-bottom: 0; }
+.legend.collapsed .legend-caret { transform: rotate(-90deg); }
+.legend.collapsed .legend-body {
+  max-height: 0;
+  opacity: 0;
+  pointer-events: none;
+}
 .legend-bar {
   width: 200px; height: 8px;
   background: linear-gradient(to right,
@@ -1001,10 +1083,14 @@ input[type="range"]::-moz-range-thumb {
    ============================================================ */
 .poi-filter-wrap {
   position: absolute;
-  bottom: 20px; left: 260px;
+  bottom: 20px; left: 260px; right: 20px;
   z-index: 500;
-  max-width: calc(100% - 300px);
+  transition: left 0.3s var(--ease);
 }
+/* When the legend is in its collapsed pill state, reclaim the 260px it
+   was using so the POI filter row has more room to wrap without clipping.
+   The .legend-collapsed flag is set on .map-wrap by toggleLegend(). */
+.map-wrap.legend-collapsed .poi-filter-wrap { left: 130px; }
 .poi-filter-title {
   font-family: 'JetBrains Mono', monospace;
   font-size: 9.5px;
@@ -3694,58 +3780,70 @@ body.edit-mode .edit-mode-banner       { display: flex; }
     <div id="map"></div>
 
     <div class="map-overlay">
-      <div class="overlay-card">
-        <div class="overlay-title">The map, personalized</div>
+      <div class="overlay-card" id="overlayCard">
+        <div class="overlay-head" onclick="toggleOverlayCard()" role="button" tabindex="0"
+             aria-label="Toggle the map-personalized explainer"
+             onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleOverlayCard();}">
+          <div class="overlay-title">The map, personalized</div>
+          <span class="overlay-caret" aria-hidden="true">▾</span>
+        </div>
         <div class="overlay-main">Sydney, recolored for <strong>you</strong>. <span style="color:#15803d;font-weight:600">Green</span> = strong fit, <span style="color:#b91c1c;font-weight:600">red</span> = avoid.</div>
       </div>
     </div>
 
-    <div class="legend">
-      <div class="legend-title" id="legendTitle">Fit Score</div>
-      <div class="legend-bar" id="legendBar"></div>
-      <div class="legend-labels" id="legendLabels">
-        <span>Avoid</span><span>Neutral</span><span>Strong fit</span>
+    <div class="legend" id="legend">
+      <div class="legend-head" onclick="toggleLegend()" role="button" tabindex="0"
+           aria-label="Toggle the legend panel"
+           onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleLegend();}">
+        <div class="legend-title" id="legendTitle">Fit Score</div>
+        <span class="legend-caret" aria-hidden="true">▾</span>
       </div>
-      <!-- Heatmap mode: colour by personality fit (default), or by commute
-           time (when the user has a work address). Only the "Commute" radio
-           is enabled once commuteData arrives. -->
-      <div class="legend-mode" role="tablist" aria-label="Heatmap mode">
-        <button type="button" class="legend-mode-btn active" data-mode="fit"
-                onclick="onHeatmapModeChange('fit')" role="tab" aria-selected="true">Fit</button>
-        <button type="button" class="legend-mode-btn" data-mode="commute"
-                onclick="onHeatmapModeChange('commute')" role="tab" aria-selected="false"
-                disabled title="Set a work address to enable">Commute</button>
-      </div>
-      <label class="legend-toggle" for="heatmapToggle">
-        <input type="checkbox" id="heatmapToggle" checked
-               onchange="toggleHeatmap(this.checked)">
-        <span class="legend-switch"><span class="legend-switch-thumb"></span></span>
-        <span class="legend-toggle-label">Heatmap layer</span>
-        <span class="legend-toggle-state" aria-hidden="true"></span>
-      </label>
-      <details class="legend-explainer">
-        <summary>
-          <svg class="legend-explainer-caret" viewBox="0 0 10 10" fill="none"
-               stroke="currentColor" stroke-width="1.6"
-               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-            <polyline points="3.5,2 6.5,5 3.5,8"/>
-          </svg>
-          <span>Technical detail</span>
-          <span class="legend-explainer-caret-label" aria-hidden="true"></span>
-        </summary>
-        <div class="legend-explainer-body">
-          <ol>
-            <li>Every Sydney suburb has a 6-D <span class="mono">taste vector</span> over <em>social_energy, aesthetic, pace, outdoor, culinary, community</em>, built from OSM POI density + per-dimension percentile rank.</li>
-            <li>Your quiz seeds a parallel 6-D user vector. Match score is <span class="mono">mean-centred cosine similarity</span> between the two, rescaled to 0–100, then softly gated by a logistic function of <span class="mono">rent_2br / weekly_budget</span> (0.3–1.0 multiplier; budget-over suburbs fade but don't disappear).</li>
-            <li>The heatmap is a Leaflet <span class="mono">GridLayer</span>. For every ~5 px sample in each 256&times;256 tile we evaluate a Gaussian KDE over all 45 suburb centroids:
-              <span class="formula">fit(p) = Σ wᵢ · scoreᵢ / Σ wᵢ
-wᵢ = exp(−dᵢ² / (2σ²)), σ ≈ 2.4 km</span>
-              with a small neutral prior (weight 0.04 at score 50) so empty regions decay to grey instead of a random neighbour.</li>
-            <li>The scalar <span class="mono">fit</span> is run through a 9-stop red → grey → green ramp; alpha scales with <span class="mono">|fit − 50|</span> so neutral areas read as background. A 2 px per-tile CSS blur removes the sample grid without blurring the basemap.</li>
-          </ol>
-          <p>Toggle off to see the raw CARTO basemap + suburb polygons underneath.</p>
+      <div class="legend-body">
+        <div class="legend-bar" id="legendBar"></div>
+        <div class="legend-labels" id="legendLabels">
+          <span>Avoid</span><span>Neutral</span><span>Strong fit</span>
         </div>
-      </details>
+        <!-- Heatmap mode: colour by personality fit (default), or by commute
+             time (when the user has a work address). Only the "Commute" radio
+             is enabled once commuteData arrives. -->
+        <div class="legend-mode" role="tablist" aria-label="Heatmap mode">
+          <button type="button" class="legend-mode-btn active" data-mode="fit"
+                  onclick="onHeatmapModeChange('fit')" role="tab" aria-selected="true">Fit</button>
+          <button type="button" class="legend-mode-btn" data-mode="commute"
+                  onclick="onHeatmapModeChange('commute')" role="tab" aria-selected="false"
+                  disabled title="Set a work address to enable">Commute</button>
+        </div>
+        <label class="legend-toggle" for="heatmapToggle">
+          <input type="checkbox" id="heatmapToggle" checked
+                 onchange="toggleHeatmap(this.checked)">
+          <span class="legend-switch"><span class="legend-switch-thumb"></span></span>
+          <span class="legend-toggle-label">Heatmap layer</span>
+          <span class="legend-toggle-state" aria-hidden="true"></span>
+        </label>
+        <details class="legend-explainer">
+          <summary>
+            <svg class="legend-explainer-caret" viewBox="0 0 10 10" fill="none"
+                 stroke="currentColor" stroke-width="1.6"
+                 stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <polyline points="3.5,2 6.5,5 3.5,8"/>
+            </svg>
+            <span>Technical detail</span>
+            <span class="legend-explainer-caret-label" aria-hidden="true"></span>
+          </summary>
+          <div class="legend-explainer-body">
+            <ol>
+              <li>Every Sydney suburb has a 6-D <span class="mono">taste vector</span> over <em>social_energy, aesthetic, pace, outdoor, culinary, community</em>, built from OSM POI density + per-dimension percentile rank.</li>
+              <li>Your quiz seeds a parallel 6-D user vector. Match score is <span class="mono">mean-centred cosine similarity</span> between the two, rescaled to 0–100, then softly gated by a logistic function of <span class="mono">rent_2br / weekly_budget</span> (0.3–1.0 multiplier; budget-over suburbs fade but don't disappear).</li>
+              <li>The heatmap is a Leaflet <span class="mono">GridLayer</span>. For every ~5 px sample in each 256&times;256 tile we evaluate a Gaussian KDE over all 45 suburb centroids:
+                <span class="formula">fit(p) = Σ wᵢ · scoreᵢ / Σ wᵢ
+wᵢ = exp(−dᵢ² / (2σ²)), σ ≈ 2.4 km</span>
+                with a small neutral prior (weight 0.04 at score 50) so empty regions decay to grey instead of a random neighbour.</li>
+              <li>The scalar <span class="mono">fit</span> is run through a 9-stop red → grey → green ramp; alpha scales with <span class="mono">|fit − 50|</span> so neutral areas read as background. A 2 px per-tile CSS blur removes the sample grid without blurring the basemap.</li>
+            </ol>
+            <p>Toggle off to see the raw CARTO basemap + suburb polygons underneath.</p>
+          </div>
+        </details>
+      </div>
     </div>
 
     <!-- POI category filter — populated dynamically by renderPoiFilter() -->
@@ -4970,6 +5068,11 @@ function ensureMap() {
     });
     ro.observe(map.getContainer());
   }
+
+  // Wire the one-shot "first map interaction collapses the overlay panels"
+  // behaviour. Panels start expanded so the user reads them; after their
+  // first real pan/zoom, both auto-collapse to maximise map real estate.
+  setupMapAutoCollapse();
 }
 
 // ---- Suburb polygons (L.geoJSON with dark-glass hover) ------------------
@@ -6002,6 +6105,66 @@ function renderTopList() {
 function toggleTopSuburbs() {
   const el = document.getElementById('topSuburbs');
   if (el) el.classList.toggle('collapsed');
+}
+
+// ---- Collapsible overlay card + legend ---------------------------------
+// Both panels start expanded so the user reads them on first load, then
+// auto-collapse as soon as the user pans/zooms the map — the signal that
+// they've seen the explainer and want more map real estate. Manual toggles
+// still work via the caret after that. _mapInteractionSeen guards the
+// one-shot handler so reopening a collapsed panel doesn't re-trigger the
+// auto-collapse on the next pan.
+let _mapInteractionSeen = false;
+
+function toggleOverlayCard() {
+  const el = document.getElementById('overlayCard');
+  if (el) el.classList.toggle('collapsed');
+}
+
+function toggleLegend() {
+  const el   = document.getElementById('legend');
+  const wrap = document.querySelector('.map-wrap');
+  if (!el) return;
+  const collapsed = el.classList.toggle('collapsed');
+  // Mirror the flag on .map-wrap so the POI filter row can shift left to
+  // reclaim the ~130px the legend was using — this is what actually makes
+  // the map feel bigger when the user collapses the legend.
+  if (wrap) wrap.classList.toggle('legend-collapsed', collapsed);
+}
+
+// Called once when the map is ready. Attaches a one-shot listener that
+// collapses both the top-left overlay card and the bottom-left legend on
+// the user's first meaningful pan/zoom. Zero-duration drags and programmatic
+// moves (initial bounds-set, flyToSuburb, etc.) are filtered out via the
+// `e.target._loaded` + movestart-driven sentinel pattern — we only collapse
+// once a real user gesture is detected.
+function setupMapAutoCollapse() {
+  if (!map || _mapInteractionSeen) return;
+
+  let userGestureInFlight = false;
+
+  const markUser  = () => { userGestureInFlight = true; };
+  const onMoveEnd = () => {
+    if (!userGestureInFlight || _mapInteractionSeen) return;
+    _mapInteractionSeen = true;
+    // Collapse both, then detach listeners so subsequent pans/zooms don't
+    // keep snapping panels closed on the user while they're exploring.
+    const card   = document.getElementById('overlayCard');
+    const legend = document.getElementById('legend');
+    const wrap   = document.querySelector('.map-wrap');
+    if (card)   card.classList.add('collapsed');
+    if (legend) legend.classList.add('collapsed');
+    if (wrap)   wrap.classList.add('legend-collapsed');
+    map.off('dragstart',  markUser);
+    map.off('zoomstart',  markUser);
+    map.off('moveend',    onMoveEnd);
+    map.off('zoomend',    onMoveEnd);
+  };
+
+  map.on('dragstart', markUser);
+  map.on('zoomstart', markUser);
+  map.on('moveend',   onMoveEnd);
+  map.on('zoomend',   onMoveEnd);
 }
 
 function renderAll() {

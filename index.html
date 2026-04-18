@@ -2061,9 +2061,14 @@ input[type="range"]::-moz-range-thumb {
   left: 50%;
   width: 1000px;
   height: 1000px;
-  transform: translate(-50%, -50%);
+  /* --px / --py are cursor parallax offsets in px, set by JS on mousemove.
+     They add to the centering translate and drive a subtle drift toward
+     the cursor. Fall back to 0,0 so the layout is correct on load and
+     for users without JS / on touch devices. */
+  transform: translate(calc(-50% + var(--px, 0px)), calc(-50% + var(--py, 0px)));
+  transition: transform 0.5s var(--ease);
   pointer-events: none;
-  opacity: 0.55;
+  opacity: 0.45;
   z-index: 0;
 }
 .landing-bg-orbits svg {
@@ -2080,19 +2085,32 @@ input[type="range"]::-moz-range-thumb {
   stroke: rgba(10, 10, 10, 0.05);
   stroke-dasharray: 2 5;
 }
-.landing-bg-orbits .core {
-  fill: rgba(10, 10, 10, 0.85);
-}
-.landing-bg-orbits .core-glow {
-  fill: rgba(10, 10, 10, 0.06);
-}
 .landing-bg-orbits .planet {
   filter: drop-shadow(0 0 6px currentColor);
+  transition: r 0.4s var(--ease), filter 0.4s var(--ease);
+}
+/* When the cursor hovers an orbit ring (via the invisible interactive
+   hit-rings below), brighten all planets briefly — feels like the system
+   "notices" the viewer without needing per-planet hover affordance. */
+.landing-bg-orbits.awake .planet { filter: drop-shadow(0 0 10px currentColor); }
+.landing-bg-orbits .hit-ring {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 40;
+  pointer-events: stroke;
+  cursor: crosshair;
 }
 .landing-bg-orbits .orbit-1 { transform-origin: 500px 500px; animation: orbitSpin 60s linear infinite; }
 .landing-bg-orbits .orbit-2 { transform-origin: 500px 500px; animation: orbitSpin 95s linear infinite reverse; }
 .landing-bg-orbits .orbit-3 { transform-origin: 500px 500px; animation: orbitSpin 130s linear infinite; }
 .landing-bg-orbits .orbit-4 { transform-origin: 500px 500px; animation: orbitSpin 180s linear infinite reverse; }
+@media (prefers-reduced-motion: reduce) {
+  .landing-bg-orbits { transition: none; }
+  .landing-bg-orbits .orbit-1,
+  .landing-bg-orbits .orbit-2,
+  .landing-bg-orbits .orbit-3,
+  .landing-bg-orbits .orbit-4 { animation: none; }
+}
 
 @keyframes orbitSpin {
   from { transform: rotate(0deg); }
@@ -2102,6 +2120,14 @@ input[type="range"]::-moz-range-thumb {
 .landing-content {
   position: relative;
   z-index: 1;
+  /* Flex column so the BETA pill, wordmark, tagline etc. each get their
+     own centered row. Previously `.landing-wordmark` was display:inline-block
+     and the parent had text-align:center — that made the inline-flex tag
+     and the huge h1 flow together on one line, pushing the pill left of
+     "orbit". Column layout fixes the pile-up cleanly. */
+  display: flex;
+  flex-direction: column;
+  align-items: center;
   text-align: center;
   padding: 32px 24px;
   max-width: 720px;
@@ -2294,12 +2320,17 @@ input[type="range"]::-moz-range-thumb {
   inset: 0;
   z-index: 9998;
   background: radial-gradient(circle at 70% 30%, #fdfdfc, #eef1f5);
+  /* Same safe-center pattern as .quiz-overlay: flex column + auto-margin
+     shell so the overlay scrolls from the top when content exceeds the
+     viewport, instead of clipping the header unreachable above the
+     scroll origin. */
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
   transition: opacity 0.6s var(--ease);
   padding: 40px 20px;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 .details-overlay.hidden {
   opacity: 0;
@@ -2308,12 +2339,14 @@ input[type="range"]::-moz-range-thumb {
 .details-shell {
   width: 100%;
   max-width: 720px;
+  margin: auto 0;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 18px;
   box-shadow: var(--shadow-lg);
   padding: 40px 44px 36px;
   position: relative;
+  flex-shrink: 0;
 }
 .details-top {
   display: flex;
@@ -2489,12 +2522,20 @@ input[type="range"]::-moz-range-thumb {
   inset: 0;
   z-index: 9999;
   background: radial-gradient(circle at 30% 20%, #fdfdfc, #ebeef2);
+  /* flex column + auto-margin on the shell = "center vertically when the
+     shell fits; stack from the top and scroll when it doesn't." Previously
+     this was `align-items: center; justify-content: center;` which centred
+     the shell even when it overflowed — pushing its top above the scroll
+     origin so the user could never scroll up to reach it. The new pattern
+     is the bulletproof equivalent of `align-items: safe center` without
+     relying on newer Safari support. */
   display: flex;
+  flex-direction: column;
   align-items: center;
-  justify-content: center;
   transition: opacity 0.6s var(--ease);
   padding: 40px 20px;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 /* ---------- Edit-preferences confirm modal ---------- */
@@ -2676,12 +2717,16 @@ body.edit-mode .edit-mode-banner       { display: flex; }
 .quiz-shell {
   width: 100%;
   max-width: 720px;
+  /* auto margins top+bottom center the shell when it fits and collapse to 0
+     when it doesn't — complements the overlay's flex-column layout. */
+  margin: auto 0;
   background: var(--surface);
   border: 1px solid var(--line);
   border-radius: 18px;
   box-shadow: var(--shadow-lg);
   padding: 40px 44px 36px;
   position: relative;
+  flex-shrink: 0;
 }
 .quiz-progress-bar {
   position: absolute;
@@ -3314,13 +3359,15 @@ body.edit-mode .edit-mode-banner       { display: flex; }
 
 <!-- ============== LANDING / PORTAL SPLASH ============== -->
 <div class="landing-overlay" id="landingOverlay">
-  <!-- Background: you (the core) at the centre, suburbs as planets orbiting. -->
-  <div class="landing-bg-orbits" aria-hidden="true">
+  <!-- Background: the wordmark IS the core; the rings orbit around it.
+       Previously a hard core dot + halo sat dead-centre at (500,500) and
+       clashed visually with the description text (muddy grey blob in the
+       middle of the screen). Removing those lets the text carry the centre
+       and keeps the graphic subtle. Hit-rings are invisible strokes used
+       only as cursor targets — they re-project the orbits as interactive
+       without stealing pointer events from the rest of the landing. -->
+  <div class="landing-bg-orbits" aria-hidden="true" id="landingOrbits">
     <svg viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet">
-      <!-- soft halo behind the core -->
-      <circle class="core-glow" cx="500" cy="500" r="60"/>
-      <circle class="core-glow" cx="500" cy="500" r="32"/>
-
       <!-- four orbit rings, alternating dashed / solid for depth -->
       <ellipse class="ring" cx="500" cy="500" rx="160" ry="150"/>
       <ellipse class="ring ring-dashed" cx="500" cy="500" rx="260" ry="244"/>
@@ -3344,8 +3391,14 @@ body.edit-mode .edit-mode-banner       { display: flex; }
         <circle class="planet" cx="40"   cy="500" r="3" fill="#94a3b8" style="color:#94a3b8"/>
       </g>
 
-      <!-- the core: you -->
-      <circle class="core" cx="500" cy="500" r="7"/>
+      <!-- Invisible hit-rings: wide transparent strokes along each orbit so
+           the cursor can "touch" the orbit system and briefly wake it.
+           pointer-events:stroke means only the ring-shaped band is hot;
+           the vast empty space between rings stays click-through. -->
+      <ellipse class="hit-ring" cx="500" cy="500" rx="160" ry="150"/>
+      <ellipse class="hit-ring" cx="500" cy="500" rx="260" ry="244"/>
+      <ellipse class="hit-ring" cx="500" cy="500" rx="360" ry="338"/>
+      <ellipse class="hit-ring" cx="500" cy="500" rx="460" ry="430"/>
     </svg>
   </div>
 
@@ -3377,9 +3430,9 @@ body.edit-mode .edit-mode-banner       { display: flex; }
     <div class="landing-meta">
       <span>45 suburbs</span>
       <span class="sep"></span>
-      <span>Real OpenStreetMap data</span>
+      <span>Real-world data</span>
       <span class="sep"></span>
-      <span>6-dim taste vector</span>
+      <span>6D taste vector</span>
     </div>
 
     <div class="landing-keyhint">
@@ -6744,12 +6797,92 @@ function enterApp() {
   const landing = document.getElementById('landingOverlay');
   if (!landing || landing.classList.contains('hidden')) return;
   if (landingRotTimer) { clearInterval(landingRotTimer); landingRotTimer = null; }
+  teardownLandingParallax();
   landing.classList.add('hidden');
   // Remove from layout entirely after the fade so it can't intercept clicks.
   setTimeout(() => { landing.style.display = 'none'; }, 750);
   // Flow now: landing → details → quiz → map. Details is a separate overlay
   // so we can collect name / work address / budget / dwelling up front.
   showDetails();
+}
+
+// ---------------------------------------------------------------------
+// Landing orbit — cursor parallax
+// ---------------------------------------------------------------------
+// The orbit SVG is a background layer behind the landing content. We nudge
+// it a few pixels toward the cursor on mousemove so the rings feel alive
+// without overwhelming the actual content. `--px` and `--py` are consumed
+// by the CSS transform on `.landing-bg-orbits`. Magnitude capped at ±24px
+// — larger values break the illusion and start pulling the rings off the
+// wordmark. Hover on any ring adds an `.awake` class that brightens the
+// planets for a moment. Touch / reduced-motion users get the static view.
+let _landingParallaxHandlers = null;
+function setupLandingParallax() {
+  const overlay = document.getElementById('landingOverlay');
+  const orbits  = document.getElementById('landingOrbits');
+  if (!overlay || !orbits) return;
+  if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  if (window.matchMedia && window.matchMedia('(hover: none)').matches) return;
+
+  const MAX = 24; // px cap on either axis
+  let raf = null;
+  let targetX = 0, targetY = 0;
+  let curX = 0, curY = 0;
+
+  function tick() {
+    // Lerp toward the target so the drift looks physical rather than
+    // glued-to-cursor. 0.08 ≈ 120ms settle time at 60fps.
+    curX += (targetX - curX) * 0.08;
+    curY += (targetY - curY) * 0.08;
+    orbits.style.setProperty('--px', curX.toFixed(2) + 'px');
+    orbits.style.setProperty('--py', curY.toFixed(2) + 'px');
+    if (Math.abs(targetX - curX) > 0.1 || Math.abs(targetY - curY) > 0.1) {
+      raf = requestAnimationFrame(tick);
+    } else {
+      raf = null;
+    }
+  }
+  function onMove(ev) {
+    const rect = overlay.getBoundingClientRect();
+    const nx = (ev.clientX - rect.left) / rect.width  - 0.5; // [-0.5, 0.5]
+    const ny = (ev.clientY - rect.top)  / rect.height - 0.5;
+    targetX = nx * MAX * 2;
+    targetY = ny * MAX * 2;
+    if (!raf) raf = requestAnimationFrame(tick);
+  }
+  function onLeave() {
+    targetX = 0; targetY = 0;
+    if (!raf) raf = requestAnimationFrame(tick);
+  }
+
+  // Hit-rings use pointer-events:stroke so only the ~40px band around each
+  // orbit is interactive. Hovering any of them wakes the whole system.
+  const hits = orbits.querySelectorAll('.hit-ring');
+  function onHitEnter() { orbits.classList.add('awake'); }
+  function onHitLeave() { orbits.classList.remove('awake'); }
+  hits.forEach(h => {
+    h.addEventListener('mouseenter', onHitEnter);
+    h.addEventListener('mouseleave', onHitLeave);
+  });
+
+  overlay.addEventListener('mousemove', onMove);
+  overlay.addEventListener('mouseleave', onLeave);
+
+  _landingParallaxHandlers = () => {
+    overlay.removeEventListener('mousemove', onMove);
+    overlay.removeEventListener('mouseleave', onLeave);
+    hits.forEach(h => {
+      h.removeEventListener('mouseenter', onHitEnter);
+      h.removeEventListener('mouseleave', onHitLeave);
+    });
+    if (raf) cancelAnimationFrame(raf);
+  };
+}
+function teardownLandingParallax() {
+  if (_landingParallaxHandlers) {
+    _landingParallaxHandlers();
+    _landingParallaxHandlers = null;
+  }
 }
 
 // Keyboard shortcut: Enter or Space starts the journey. Ignored once the
@@ -6824,6 +6957,7 @@ function backToLanding() {
   landing.offsetHeight;
   landing.classList.remove('hidden');
   if (!landingRotTimer) startLandingRotator();
+  if (!_landingParallaxHandlers) setupLandingParallax();
 }
 
 function onDetailName(v)     { userDetails.name = v.trim(); }
@@ -6938,8 +7072,10 @@ function initDetailsAutocomplete() {
 // Boot
 // ========================================================================
 // Quiz boots in the background so it's already loaded by the time the
-// user dismisses the landing splash. Landing rotator starts immediately.
+// user dismisses the landing splash. Landing rotator + cursor parallax
+// start immediately; both tear down when the user hits Enter.
 startLandingRotator();
+setupLandingParallax();
 bootQuiz();
 </script>
 

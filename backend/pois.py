@@ -36,6 +36,15 @@ _OSM_PARQUET_PATH = Path(__file__).parent.parent / "data" / "raw" / "osm_pois_sy
 _FSQ_PARQUET_PATH = Path(__file__).parent.parent / "data" / "raw" / "fsq_sydney.parquet"
 _POIS_CACHE: Optional[List[Dict]] = None
 
+# The OSM fetch now covers 25+ categories so the scoring pipeline has real
+# data, but the map still only renders these 10 (matching the frontend chip
+# bar). Anything else (schools, clinics, breweries, pools, …) is filtered
+# out here so we don't ship unknown-icon markers.
+_DISPLAY_GROUPS = {
+    "bakery", "cafe", "restaurant", "bar", "park", "beach",
+    "gym", "gallery", "cinema", "library",
+}
+
 
 # Group keyword rules — applied in order. First match wins.
 # Substrings matched against the POI's leaf category label (case-insensitive).
@@ -134,16 +143,24 @@ def _load_osm() -> List[Dict]:
     """Load the OSM-derived parquet and translate columns to the compact
     schema the frontend expects. The OSM file is already pre-classified
     (group + suburb), so this is just a column rename + dict pack.
+
+    Filters to the 10 map-display groups the frontend has icons for. The
+    fetch covers many more categories (schools, clinics, breweries, pools,
+    …) so the suburb scoring pipeline has real data — but we don't expose
+    those on the map yet because there's no icon design for them.
     """
     df = pd.read_parquet(_OSM_PARQUET_PATH)
     pois: List[Dict] = []
     for _, row in df.iterrows():
+        g = str(row["group"])
+        if g not in _DISPLAY_GROUPS:
+            continue
         pois.append({
             "id": str(row["id"]),
             "n":  str(row["name"]),
             "la": round(float(row["latitude"]), 6),
             "ln": round(float(row["longitude"]), 6),
-            "g":  str(row["group"]),
+            "g":  g,
             "s":  str(row["suburb"]),
         })
     return pois

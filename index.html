@@ -68,6 +68,9 @@ html, body {
 .app.drawer-open {
   grid-template-columns: 340px 1fr 440px;
 }
+.app.drawer-open.drawer-wide {
+  grid-template-columns: 340px 1fr min(760px, 55vw);
+}
 
 /* ---------- Header ---------- */
 header {
@@ -456,7 +459,28 @@ input[type="range"]::-moz-range-thumb {
 
 /* Suburb polygon overlay — invisible at rest, dark glass on hover */
 .leaflet-pane.polygon-pane { z-index: 300; }
-.suburb-polygon { cursor: pointer; transition: fill-opacity 0.2s var(--ease), stroke-opacity 0.2s var(--ease); }
+/* Promote the polygon pane's SVG root to its own compositor layer so the
+   CSS transform Leaflet applies during flyTo / zoom animation is GPU-driven
+   and stays in perfect frame-lock with the tile pane. Without this hint the
+   selected polygon can briefly stall at its pre-fly projection while the
+   tile layer glides, which reads as "the highlight isn't tracking". */
+.leaflet-pane.polygon-pane svg {
+  will-change: transform;
+}
+.suburb-polygon {
+  cursor: pointer;
+  /* Keep stroke width visually constant regardless of the transform scale
+     Leaflet applies during zoom animation. Without this the 2 px selected
+     outline balloons to ~9 px at the peak of a 12.2 → 14.4 fly before
+     snapping back on zoomend — a very visible "rubber-band" glitch. */
+  vector-effect: non-scaling-stroke;
+  /* Intentionally NO CSS transition on fill/stroke-opacity here: an
+     opacity transition on an SVG path inside a parent that's also being
+     CSS-transformed can pin the path to its pre-animation bbox for the
+     duration of the transition (known browser quirk), which is exactly
+     the "highlight doesn't move with the map" symptom. Style changes are
+     fine instant. */
+}
 .suburb-hover-name {
   position: absolute;
   top: 20px;
@@ -574,15 +598,28 @@ input[type="range"]::-moz-range-thumb {
 }
 
 /* --- Heatmap toggle + explainer, stacked under the fit-score gradient --- */
+/* The toggle is framed in a subtle rounded pill so it reads as a real UI
+   control at a glance (vs. the older flush row that blended into the
+   legend type). Bigger switch, explicit ON/OFF badge, and a greenish glow
+   on the ON state push "obvious" without going loud. */
 .legend-toggle {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   margin-top: 12px;
-  padding-top: 10px;
-  border-top: 1px solid var(--line);
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--line-soft);
   cursor: pointer;
   user-select: none;
+  transition: border-color 0.18s var(--ease),
+              background 0.18s var(--ease),
+              box-shadow 0.18s var(--ease);
+}
+.legend-toggle:hover {
+  border-color: #22c55e55;
+  background: #f6faf7;
 }
 .legend-toggle input {
   position: absolute;
@@ -594,54 +631,348 @@ input[type="range"]::-moz-range-thumb {
 .legend-switch {
   position: relative;
   flex-shrink: 0;
-  width: 28px;
-  height: 16px;
+  width: 38px;
+  height: 22px;
   border-radius: 999px;
-  background: var(--line);
-  transition: background 0.18s var(--ease);
+  background: #d1d5db;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.08);
+  transition: background 0.18s var(--ease), box-shadow 0.18s var(--ease);
 }
 .legend-switch-thumb {
   position: absolute;
   top: 2px; left: 2px;
-  width: 12px;
-  height: 12px;
+  width: 18px;
+  height: 18px;
   border-radius: 50%;
   background: #fff;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
-  transition: transform 0.18s var(--ease);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2),
+              0 2px 4px rgba(0, 0, 0, 0.08);
+  transition: transform 0.2s var(--ease);
 }
 .legend-toggle input:checked + .legend-switch {
-  background: #22c55e;
+  background: #16a34a;
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.22),
+              0 0 0 3px rgba(34, 197, 94, 0.14);
 }
 .legend-toggle input:checked + .legend-switch .legend-switch-thumb {
-  transform: translateX(12px);
+  transform: translateX(16px);
 }
 .legend-toggle-label {
   color: var(--fg);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: none;
+  flex: 1;
+}
+/* State badge — tiny pill saying ON/OFF, coloured by the checked state of
+   the (visually hidden) input. The `~` combinator reaches past the switch. */
+.legend-toggle-state {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  padding: 2px 7px;
+  border-radius: 999px;
+  color: var(--muted);
+  background: #ffffff;
+  border: 1px solid var(--line);
+  transition: color 0.18s var(--ease),
+              background 0.18s var(--ease),
+              border-color 0.18s var(--ease);
+}
+.legend-toggle-state::before { content: 'OFF'; }
+.legend-toggle input:checked ~ .legend-toggle-state {
+  color: #15803d;
+  background: rgba(34, 197, 94, 0.12);
+  border-color: rgba(34, 197, 94, 0.35);
+}
+.legend-toggle input:checked ~ .legend-toggle-state::before { content: 'ON'; }
+
+/* Legend mode toggle — "Fit" (default) vs "Commute". A pill-style
+   segmented control sitting between the gradient labels and the heatmap
+   on/off switch. Commute is disabled until fetchCommutes() completes. */
+.legend-mode {
+  display: inline-flex;
+  margin: 10px 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 2px;
+  background: var(--surface);
+  gap: 2px;
+}
+.legend-mode-btn {
+  font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
-  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 5px 12px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.18s var(--ease);
 }
+.legend-mode-btn:hover:not(:disabled):not(.active) { color: var(--fg); }
+.legend-mode-btn.active {
+  background: var(--fg);
+  color: var(--surface);
+}
+.legend-mode-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Sidebar commute block — work-address readout + driving/transit pill +
+   status line + a weight slider that penalises match score by commute. */
+.commute-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.commute-workline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.3;
+}
+.commute-dot {
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--fg);
+  flex-shrink: 0;
+}
+.commute-addr {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font-weight: 500;
+}
+.commute-mode {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--surface);
+  gap: 2px;
+  margin-top: 4px;
+}
+.commute-mode-btn {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  padding: 5px 12px;
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  border-radius: 999px;
+  cursor: pointer;
+  transition: all 0.18s var(--ease);
+}
+.commute-mode-btn:hover:not(.active) { color: var(--fg); }
+.commute-mode-btn.active {
+  background: var(--fg);
+  color: var(--surface);
+}
+.commute-status {
+  font-size: 11px;
+  color: var(--fg);
+  line-height: 1.45;
+  margin-top: 6px;
+}
+.commute-status.muted  { color: var(--muted); }
+.commute-status.loading { color: var(--muted); font-style: italic; }
+.commute-status.error  { color: #b91c1c; }
+.commute-status .commute-range { color: var(--muted); font-weight: 400; }
+.sidebar-hint {
+  font-size: 11px;
+  color: var(--muted);
+  line-height: 1.45;
+  margin: 6px 0 0;
+}
+
+/* Drawer commute chip — two equal cells (Driving | Transit) with the
+   coloured minute count. Sits just below the Match Score / Rent row. */
+.d-commute {
+  margin: 14px 0 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  padding: 12px 14px;
+  background: var(--surface);
+}
+.d-commute-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.d-commute-label { color: var(--muted); }
+.d-commute-addr {
+  color: var(--fg);
+  font-family: inherit;
+  font-size: 12px;
+  text-transform: none;
+  letter-spacing: 0;
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60%;
+}
+.d-commute-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.d-commute-cell {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.d-commute-mode-lab {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+}
+.d-commute-min {
+  font-size: 22px;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  color: var(--fg);
+}
+
+/* `.legend-explainer` is a native <details> element so the collapse logic
+   is zero-JS. Summary stays flush with the existing legend typography;
+   only the caret rotates on open. */
 .legend-explainer {
-  margin-top: 10px;
-  padding-top: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
   border-top: 1px solid var(--line);
-  max-width: 220px;
+  max-width: 240px;
 }
+.legend-explainer > summary {
+  list-style: none;          /* hide the default triangle (Firefox) */
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  outline: none;
+  user-select: none;
+  color: var(--muted);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  transition: color 0.15s var(--ease);
+}
+.legend-explainer > summary::-webkit-details-marker { display: none; }
+.legend-explainer > summary:hover { color: var(--fg); }
+.legend-explainer > summary:focus-visible {
+  color: var(--fg);
+  text-decoration: underline;
+  text-decoration-color: rgba(10, 10, 10, 0.25);
+  text-underline-offset: 3px;
+}
+.legend-explainer-caret {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  flex-shrink: 0;
+  transition: transform 0.18s var(--ease);
+  transform-origin: 50% 50%;
+  color: var(--muted);
+}
+.legend-explainer[open] > summary > .legend-explainer-caret {
+  transform: rotate(90deg);
+}
+.legend-explainer > summary > .legend-explainer-caret-label {
+  margin-left: auto;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  opacity: 0.75;
+}
+.legend-explainer[open] > summary > .legend-explainer-caret-label::before {
+  content: 'hide';
+}
+.legend-explainer:not([open]) > summary > .legend-explainer-caret-label::before {
+  content: 'show';
+}
+.legend-explainer-body {
+  margin-top: 8px;
+}
+/* Kept for the (now unused) static .legend-explainer-title class in case
+   any downstream code still references it — harmless if never rendered. */
 .legend-explainer-title {
   color: var(--muted);
   font-size: 9.5px;
   letter-spacing: 0.12em;
-  margin-bottom: 6px;
+  margin-bottom: 8px;
+  text-transform: uppercase;
 }
 .legend-explainer p {
   font-family: 'Inter', -apple-system, sans-serif;
   text-transform: none;
   letter-spacing: normal;
   color: var(--fg);
-  font-size: 11px;
-  line-height: 1.45;
-  margin: 0;
+  font-size: 10.5px;
+  line-height: 1.5;
+  margin: 0 0 8px 0;
 }
+.legend-explainer p:last-child { margin-bottom: 0; }
+.legend-explainer code,
+.legend-explainer .mono {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 1px 4px;
+  letter-spacing: 0;
+  text-transform: none;
+  white-space: nowrap;
+  color: var(--fg);
+}
+.legend-explainer .formula {
+  display: block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  padding: 7px 8px;
+  margin: 6px 0;
+  background: #fafaf9;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  color: var(--fg);
+  text-transform: none;
+  letter-spacing: 0;
+  line-height: 1.4;
+  white-space: pre-wrap;
+}
+.legend-explainer ol {
+  margin: 0 0 8px 0;
+  padding-left: 20px;
+  font-family: 'Inter', -apple-system, sans-serif;
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--fg);
+  text-transform: none;
+  letter-spacing: normal;
+}
+.legend-explainer ol li { margin-bottom: 4px; }
+.legend-explainer ol li:last-child { margin-bottom: 0; }
+.legend-explainer ol li::marker { color: var(--muted); font-size: 9.5px; }
 
 /* ============================================================
    POI filter chip bar + POI markers — the main map feature
@@ -980,6 +1311,92 @@ input[type="range"]::-moz-range-thumb {
   transform: rotate(90deg);
 }
 
+/* Expand / collapse button — sits next to the close button and toggles
+   the drawer between its compact (440px) and wide (~760px) widths. The
+   actual width transition is handled by the grid-template-columns CSS
+   transition on `.app`, so this button just flips the class.          */
+.drawer-expand {
+  position: absolute;
+  top: 20px; right: 64px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  width: 36px; height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  color: var(--muted);
+  border-radius: 50%;
+  transition: all 0.25s var(--ease);
+  z-index: 10;
+  padding: 0;
+}
+.drawer-expand:hover {
+  background: var(--fg);
+  color: var(--surface);
+  border-color: var(--fg);
+}
+.drawer-expand svg {
+  width: 15px; height: 15px;
+  transition: transform 0.25s var(--ease);
+}
+.app.drawer-wide .drawer-expand svg {
+  transform: rotate(180deg);
+}
+
+/* When the drawer is wide, reflow widgets that benefit from the extra
+   horizontal room. Dim bars stay single-column (they're tall, not wide),
+   but listings and the commute chip scale up nicely.                   */
+.app.drawer-wide .listings-list {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+.app.drawer-wide .d-commute-grid {
+  grid-template-columns: 1fr 1fr;
+}
+.app.drawer-wide .drawer-inner {
+  padding: 32px 44px 80px;
+}
+
+/* Commute chip — directions row + distance subtext. */
+.d-commute-dist {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  font-family: 'JetBrains Mono', monospace;
+  letter-spacing: 0.02em;
+}
+.d-commute-actions {
+  margin-top: 10px;
+  display: flex;
+  justify-content: flex-end;
+}
+.d-commute-directions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted);
+  background: var(--surface);
+  text-decoration: none;
+  transition: all 0.2s var(--ease);
+}
+.d-commute-directions:hover {
+  background: var(--fg);
+  color: var(--surface);
+  border-color: var(--fg);
+}
+.d-commute-directions svg {
+  width: 12px; height: 12px;
+}
+
 .d-name {
   font-size: 42px;
   font-weight: 500;
@@ -1225,6 +1642,134 @@ input[type="range"]::-moz-range-thumb {
   margin-right: 3px;
 }
 
+/* ---- "Why this fits you" block ---------------------------------------
+   Sits between the score block and the AI take. Concrete, data-grounded
+   answer to "why is this a fit?" — top aligned dimensions paired with
+   the actual POI counts that drive each score.
+------------------------------------------------------------------------ */
+.why-fit {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-left: 3px solid var(--green);
+  border-radius: var(--r-md);
+  padding: 16px 18px 18px;
+  margin-bottom: 22px;
+  box-shadow: var(--shadow-sm);
+}
+.why-fit-kicker {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--muted);
+  margin-bottom: 12px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+}
+.why-fit-kicker .dot {
+  display: inline-block;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.18);
+}
+.why-fit-empty {
+  font-size: 12.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+.why-list {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.why-item {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 14px;
+  border-bottom: 1px dashed var(--line);
+}
+.why-item:last-child {
+  padding-bottom: 0;
+  border-bottom: none;
+}
+.why-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.why-dim {
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--fg);
+  letter-spacing: -0.005em;
+}
+.why-nums {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+.why-num-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  background: var(--line-soft);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--fg);
+}
+.why-num-pill.suburb {
+  background: rgba(34, 197, 94, 0.10);
+  border-color: rgba(34, 197, 94, 0.35);
+  color: #166534;
+}
+.why-num-pill .nlbl {
+  color: var(--muted);
+  font-weight: 500;
+}
+.why-num-pill .nval {
+  font-weight: 700;
+}
+.why-arrow {
+  color: var(--muted-2);
+  font-size: 11px;
+}
+.why-evidence {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+.why-evidence-chip {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  padding: 4px 9px;
+  background: #f0fdf4;
+  border: 1px solid rgba(34, 197, 94, 0.30);
+  border-radius: 999px;
+  color: #14532d;
+  white-space: nowrap;
+}
+.why-evidence-chip strong {
+  color: #052e16;
+  font-weight: 700;
+  margin-right: 3px;
+}
+.why-evidence-empty {
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  color: var(--muted);
+}
+
 .d-section { margin-bottom: 28px; }
 .d-section h3 {
   font-family: 'JetBrains Mono', monospace;
@@ -1366,6 +1911,450 @@ input[type="range"]::-moz-range-thumb {
   white-space: nowrap;
 }
 
+/* ---------- Landing / portal splash ---------- */
+.landing-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: radial-gradient(circle at 30% 20%, #fefefd 0%, #f3f5f8 55%, #e7ecf2 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  transition: opacity 0.7s var(--ease);
+}
+.landing-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.landing-bg-orbits {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1000px;
+  height: 1000px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+  opacity: 0.55;
+  z-index: 0;
+}
+.landing-bg-orbits svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.landing-bg-orbits .ring {
+  fill: none;
+  stroke: rgba(10, 10, 10, 0.07);
+  stroke-width: 1;
+}
+.landing-bg-orbits .ring-dashed {
+  stroke: rgba(10, 10, 10, 0.05);
+  stroke-dasharray: 2 5;
+}
+.landing-bg-orbits .core {
+  fill: rgba(10, 10, 10, 0.85);
+}
+.landing-bg-orbits .core-glow {
+  fill: rgba(10, 10, 10, 0.06);
+}
+.landing-bg-orbits .planet {
+  filter: drop-shadow(0 0 6px currentColor);
+}
+.landing-bg-orbits .orbit-1 { transform-origin: 500px 500px; animation: orbitSpin 60s linear infinite; }
+.landing-bg-orbits .orbit-2 { transform-origin: 500px 500px; animation: orbitSpin 95s linear infinite reverse; }
+.landing-bg-orbits .orbit-3 { transform-origin: 500px 500px; animation: orbitSpin 130s linear infinite; }
+.landing-bg-orbits .orbit-4 { transform-origin: 500px 500px; animation: orbitSpin 180s linear infinite reverse; }
+
+@keyframes orbitSpin {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.landing-content {
+  position: relative;
+  z-index: 1;
+  text-align: center;
+  padding: 32px 24px;
+  max-width: 720px;
+  animation: landingRise 0.9s var(--ease) both;
+}
+@keyframes landingRise {
+  from { opacity: 0; transform: translateY(14px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.landing-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding: 6px 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.7);
+  backdrop-filter: blur(6px);
+  margin-bottom: 28px;
+}
+.landing-tag .live-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
+  animation: livePulse 2s ease-in-out infinite;
+}
+@keyframes livePulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+.landing-wordmark {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 600;
+  font-size: clamp(64px, 13vw, 144px);
+  letter-spacing: -0.05em;
+  line-height: 0.95;
+  color: var(--fg);
+  margin: 0 0 16px;
+  position: relative;
+  display: inline-block;
+}
+.landing-wordmark::after {
+  content: '';
+  position: absolute;
+  right: -14px;
+  top: 14%;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 14px rgba(34, 197, 94, 0.7);
+  animation: livePulse 2.4s ease-in-out infinite;
+}
+.landing-tagline {
+  font-family: 'Inter', system-ui, sans-serif;
+  font-weight: 400;
+  font-style: italic;
+  font-size: clamp(22px, 3.4vw, 32px);
+  letter-spacing: -0.02em;
+  color: var(--fg);
+  margin: 0 0 14px;
+  opacity: 0.92;
+}
+.landing-sub {
+  font-size: 15px;
+  line-height: 1.6;
+  color: var(--muted);
+  max-width: 460px;
+  margin: 0 auto 36px;
+}
+.landing-cta {
+  display: inline-flex;
+  align-items: center;
+  gap: 14px;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 16px 12px 16px 24px;
+  font-family: inherit;
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--fg);
+  cursor: pointer;
+  box-shadow: 0 4px 24px rgba(10, 10, 10, 0.05),
+              0 1px 3px rgba(10, 10, 10, 0.04);
+  transition: transform 0.25s var(--ease),
+              box-shadow 0.25s var(--ease),
+              border-color 0.25s var(--ease);
+  min-width: 380px;
+  max-width: 92vw;
+}
+.landing-cta:hover {
+  transform: translateY(-2px);
+  border-color: var(--fg);
+  box-shadow: 0 10px 32px rgba(10, 10, 10, 0.10),
+              0 2px 6px rgba(10, 10, 10, 0.05);
+}
+.landing-cta:active {
+  transform: translateY(0);
+}
+.landing-cta-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+.landing-cta-text {
+  flex: 1;
+  text-align: left;
+  color: var(--fg);
+}
+.landing-cta-text .placeholder-rotate {
+  display: inline-block;
+  color: var(--muted-2);
+  font-weight: 400;
+  font-style: italic;
+}
+.landing-cta-arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: var(--fg);
+  color: white;
+  border-radius: 999px;
+  font-size: 14px;
+  flex-shrink: 0;
+  transition: transform 0.25s var(--ease);
+}
+.landing-cta:hover .landing-cta-arrow {
+  transform: translateX(2px);
+}
+.landing-meta {
+  margin-top: 32px;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.landing-meta .sep {
+  width: 3px;
+  height: 3px;
+  border-radius: 50%;
+  background: var(--muted-2);
+  display: inline-block;
+}
+.landing-keyhint {
+  margin-top: 18px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+.landing-keyhint kbd {
+  font-family: inherit;
+  font-size: 10px;
+  background: rgba(10, 10, 10, 0.05);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  padding: 2px 7px;
+  color: var(--muted);
+  margin: 0 2px;
+}
+@media (max-width: 540px) {
+  .landing-cta { min-width: 0; width: 100%; }
+  .landing-bg-orbits { width: 700px; height: 700px; }
+}
+
+/* ---------- Details overlay (name / work / budget / dwelling) ---------- */
+.details-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9998;
+  background: radial-gradient(circle at 70% 30%, #fdfdfc, #eef1f5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: opacity 0.6s var(--ease);
+  padding: 40px 20px;
+  overflow-y: auto;
+}
+.details-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.details-shell {
+  width: 100%;
+  max-width: 720px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  box-shadow: var(--shadow-lg);
+  padding: 40px 44px 36px;
+  position: relative;
+}
+.details-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 10px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+}
+.details-top .brand { font-weight: 600; color: var(--fg); letter-spacing: 0.18em; }
+.details-title {
+  font-size: 26px;
+  font-weight: 500;
+  letter-spacing: -0.025em;
+  line-height: 1.25;
+  margin: 4px 0 6px;
+}
+.details-sub {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin: 0 0 24px;
+}
+.details-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px 18px;
+  margin-bottom: 26px;
+}
+.details-field.full { grid-column: 1 / -1; }
+.details-field label {
+  display: block;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--muted);
+  margin-bottom: 7px;
+}
+.details-field input,
+.details-field select {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 14px;
+  color: var(--fg);
+  transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
+  appearance: none;
+}
+.details-field input:focus,
+.details-field select:focus {
+  outline: none;
+  border-color: var(--fg);
+  box-shadow: 0 0 0 3px rgba(34, 34, 34, 0.06);
+}
+.details-field select {
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'><path d='M3 5 L6 8 L9 5' stroke='%23737373' stroke-width='1.4' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  padding-right: 34px;
+}
+.details-field .hint {
+  font-size: 11.5px;
+  color: var(--muted);
+  margin-top: 6px;
+}
+.details-budget-row {
+  display: flex;
+  gap: 12px;
+  align-items: stretch;
+}
+.details-budget-row input[type="number"] {
+  flex: 0 0 140px;
+}
+.details-budget-row input[type="range"] {
+  flex: 1;
+  accent-color: var(--fg);
+}
+.details-nav {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.details-back {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  padding: 8px 0;
+  transition: color 0.2s var(--ease);
+}
+.details-back:hover { color: var(--fg); }
+.details-cta {
+  padding: 12px 22px;
+  background: var(--fg);
+  color: var(--surface);
+  border: none;
+  border-radius: 999px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  cursor: pointer;
+  transition: all 0.2s var(--ease);
+}
+.details-cta:hover:not(:disabled) {
+  transform: translateY(-1px);
+  box-shadow: var(--shadow-md);
+}
+.details-cta:disabled {
+  background: var(--muted-2);
+  cursor: default;
+}
+.details-error {
+  background: #fee2e2;
+  border: 1px solid #fecaca;
+  color: #991b1b;
+  padding: 10px 14px;
+  border-radius: var(--r-md);
+  font-size: 12.5px;
+  margin: 0 0 14px;
+  display: none;
+}
+.details-error.show { display: block; }
+/* Google Places: hide the gray "powered by Google" strip, the dropdown keeps
+   its own attribution. pac-container z-index must beat our overlay. */
+.pac-container { z-index: 10100 !important; border-radius: 10px; box-shadow: var(--shadow-lg); border: 1px solid var(--line); font-family: inherit; }
+.pac-item { padding: 8px 12px; font-size: 13px; }
+.pac-item-query { font-size: 13px; }
+
+@media (max-width: 640px) {
+  .details-grid { grid-template-columns: 1fr; }
+  .details-shell { padding: 32px 24px; }
+  .details-budget-row { flex-direction: column; }
+  .details-budget-row input[type="number"] { flex: 0 0 auto; }
+}
+
+/* Free-text quiz note (final step) */
+.quiz-note {
+  width: 100%;
+  min-height: 130px;
+  resize: vertical;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--surface);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--fg);
+  margin-bottom: 24px;
+  transition: border-color 0.18s var(--ease), box-shadow 0.18s var(--ease);
+}
+.quiz-note:focus {
+  outline: none;
+  border-color: var(--fg);
+  box-shadow: 0 0 0 3px rgba(34, 34, 34, 0.06);
+}
+
 /* ---------- Quiz overlay ---------- */
 .quiz-overlay {
   position: fixed;
@@ -1379,6 +2368,179 @@ input[type="range"]::-moz-range-thumb {
   padding: 40px 20px;
   overflow-y: auto;
 }
+
+/* ---------- Edit-preferences confirm modal ---------- */
+/* Deliberately gates re-entry to the quiz/details flow so users don't
+   wipe their match results with an accidental click. Two-step: open
+   the modal, then explicitly confirm to enter edit mode.            */
+.edit-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 10001;
+  background: rgba(20, 22, 28, 0.42);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 1;
+  transition: opacity 0.22s var(--ease);
+}
+.edit-confirm-overlay.hidden {
+  opacity: 0;
+  pointer-events: none;
+}
+.edit-confirm-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 28px 28px 20px;
+  width: min(420px, calc(100vw - 32px));
+  box-shadow: 0 24px 60px rgba(15, 23, 42, 0.18);
+  transform: translateY(0);
+  transition: transform 0.22s var(--ease), opacity 0.22s var(--ease);
+}
+.edit-confirm-overlay.hidden .edit-confirm-card {
+  transform: translateY(8px);
+  opacity: 0;
+}
+.edit-confirm-icon {
+  width: 36px; height: 36px;
+  border-radius: 10px;
+  background: rgba(15,23,42,0.06);
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 14px;
+  color: var(--fg);
+}
+.edit-confirm-title {
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin-bottom: 8px;
+}
+.edit-confirm-body {
+  font-size: 13px;
+  color: var(--muted);
+  line-height: 1.55;
+  margin-bottom: 20px;
+}
+.edit-confirm-actions {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+.edit-confirm-btn {
+  padding: 9px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.18s var(--ease);
+  font-family: inherit;
+}
+.edit-confirm-btn:hover {
+  background: rgba(15,23,42,0.04);
+}
+.edit-confirm-btn.primary {
+  background: var(--fg);
+  color: var(--surface);
+  border-color: var(--fg);
+}
+.edit-confirm-btn.primary:hover {
+  background: #000;
+  border-color: #000;
+}
+
+/* ---------- Sidebar prefs buttons ---------- */
+.prefs-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: stretch;
+}
+.prefs-edit-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 11px 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--surface);
+  color: var(--fg);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all 0.2s var(--ease);
+  font-family: inherit;
+}
+.prefs-edit-btn:hover {
+  background: var(--fg);
+  color: var(--surface);
+  border-color: var(--fg);
+}
+.prefs-edit-btn svg {
+  width: 14px; height: 14px;
+}
+.prefs-reset-link {
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 11px;
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  cursor: pointer;
+  padding: 4px 0;
+  align-self: center;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  transition: color 0.18s var(--ease);
+}
+.prefs-reset-link:hover {
+  color: var(--fg);
+}
+
+/* Edit-mode banner shown atop the Details and Quiz overlays so the user
+   always knows they're editing existing settings, not starting fresh.
+   Hidden by default; shown only when <body class="edit-mode"> is set.   */
+.edit-mode-banner {
+  background: rgba(15, 23, 42, 0.06);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 18px;
+  font-size: 12px;
+  color: var(--fg);
+  font-family: 'JetBrains Mono', monospace;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.edit-mode-banner-x {
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 11px;
+  font-family: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: all 0.18s var(--ease);
+}
+.edit-mode-banner-x:hover {
+  background: rgba(15,23,42,0.08);
+  color: var(--fg);
+}
+body:not(.edit-mode) .edit-mode-banner { display: none !important; }
+body.edit-mode .edit-mode-banner       { display: flex; }
 .quiz-overlay.hidden {
   opacity: 0;
   pointer-events: none;
@@ -1561,6 +2723,72 @@ input[type="range"]::-moz-range-thumb {
   vertical-align: middle;
 }
 @keyframes spin { to { transform: rotate(360deg); } }
+
+/* ============================================================
+   Slider quiz — one row per personality dimension. Six of these
+   render in the first quiz step, driven by QUIZ_DIMS + userSliders.
+   Styling echoes the landing/details look: monochrome, quiet,
+   leaning on type + whitespace rather than colour.
+   ============================================================ */
+.dim-slider-list {
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+  margin-bottom: 30px;
+}
+.dim-slider-row {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.dim-slider-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.dim-slider-label {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--fg);
+  letter-spacing: -0.01em;
+}
+.dim-slider-val {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--surface);
+  background: var(--fg);
+  padding: 2px 10px;
+  border-radius: 999px;
+  min-width: 36px;
+  text-align: center;
+}
+.dim-slider-hint {
+  font-size: 12px;
+  color: var(--muted);
+  line-height: 1.4;
+  margin-bottom: 2px;
+}
+.dim-slider {
+  width: 100%;
+  margin: 2px 0;
+}
+.dim-slider-ends {
+  display: flex;
+  justify-content: space-between;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--muted-2, var(--muted));
+  margin-top: 2px;
+}
+.quiz-commute-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 8px 0 4px;
+  opacity: 0.7;
+}
 
 /* ============================================================
    Listing price pins + hover preview + detail modal
@@ -1956,13 +3184,181 @@ input[type="range"]::-moz-range-thumb {
 
 <body>
 
+<!-- ============== LANDING / PORTAL SPLASH ============== -->
+<div class="landing-overlay" id="landingOverlay">
+  <!-- Background: you (the core) at the centre, suburbs as planets orbiting. -->
+  <div class="landing-bg-orbits" aria-hidden="true">
+    <svg viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid meet">
+      <!-- soft halo behind the core -->
+      <circle class="core-glow" cx="500" cy="500" r="60"/>
+      <circle class="core-glow" cx="500" cy="500" r="32"/>
+
+      <!-- four orbit rings, alternating dashed / solid for depth -->
+      <ellipse class="ring" cx="500" cy="500" rx="160" ry="150"/>
+      <ellipse class="ring ring-dashed" cx="500" cy="500" rx="260" ry="244"/>
+      <ellipse class="ring" cx="500" cy="500" rx="360" ry="338"/>
+      <ellipse class="ring ring-dashed" cx="500" cy="500" rx="460" ry="430"/>
+
+      <!-- planets on each ring, coloured like the heatmap (greens = fit, reds = not) -->
+      <g class="orbit-1">
+        <circle class="planet" cx="660"  cy="500" r="5" fill="#22c55e" style="color:#22c55e"/>
+      </g>
+      <g class="orbit-2">
+        <circle class="planet" cx="240"  cy="500" r="4" fill="#86efac" style="color:#86efac"/>
+        <circle class="planet" cx="760"  cy="500" r="3" fill="#fca5a5" style="color:#fca5a5"/>
+      </g>
+      <g class="orbit-3">
+        <circle class="planet" cx="860"  cy="500" r="5" fill="#16a34a" style="color:#16a34a"/>
+        <circle class="planet" cx="140"  cy="500" r="4" fill="#f87171" style="color:#f87171"/>
+      </g>
+      <g class="orbit-4">
+        <circle class="planet" cx="960"  cy="500" r="3" fill="#94a3b8" style="color:#94a3b8"/>
+        <circle class="planet" cx="40"   cy="500" r="3" fill="#94a3b8" style="color:#94a3b8"/>
+      </g>
+
+      <!-- the core: you -->
+      <circle class="core" cx="500" cy="500" r="7"/>
+    </svg>
+  </div>
+
+  <div class="landing-content">
+    <div class="landing-tag">
+      <span class="live-dot"></span>
+      Sydney · Beta
+    </div>
+
+    <h1 class="landing-wordmark">orbit</h1>
+    <p class="landing-tagline">Redefine living.</p>
+    <p class="landing-sub">
+      A map drawn around who you are — not just what you can afford.
+      Seven questions, 45 Sydney suburbs, one honest answer.
+    </p>
+
+    <button class="landing-cta" type="button" onclick="enterApp()">
+      <span class="landing-cta-icon" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+      </span>
+      <span class="landing-cta-text">
+        Find the Sydney suburb that matches <span class="placeholder-rotate" id="landingRotator">who you are</span>
+      </span>
+      <span class="landing-cta-arrow" aria-hidden="true">→</span>
+    </button>
+
+    <div class="landing-meta">
+      <span>45 suburbs</span>
+      <span class="sep"></span>
+      <span>Real OpenStreetMap data</span>
+      <span class="sep"></span>
+      <span>6-dim taste vector</span>
+    </div>
+
+    <div class="landing-keyhint">
+      Press <kbd>Enter</kbd> or <kbd>Space</kbd> to begin
+    </div>
+  </div>
+</div>
+
+<!-- ============== DETAILS OVERLAY ============== -->
+<div class="details-overlay hidden" id="detailsOverlay" style="display:none;">
+  <div class="details-shell">
+    <div class="details-top">
+      <span class="brand">ORBIT</span>
+      <span>Step 0 · Your details</span>
+    </div>
+    <h2 class="details-title" id="detailsTitle">First, a quick intro.</h2>
+    <p class="details-sub" id="detailsSub">
+      We use these to personalise your map and filter listings. Your work address
+      anchors commute context; your budget keeps the match honest.
+    </p>
+
+    <div class="edit-mode-banner">
+      <span>✎ Editing your preferences — changes save when you finish the sliders</span>
+      <button class="edit-mode-banner-x" onclick="exitEditMode()">Cancel editing</button>
+    </div>
+
+    <div class="details-error" id="detailsError"></div>
+
+    <div class="details-grid">
+      <div class="details-field full">
+        <label for="detName">Name</label>
+        <input type="text" id="detName" placeholder="e.g. Cameron" autocomplete="given-name"
+               oninput="onDetailName(this.value)">
+      </div>
+
+      <div class="details-field full">
+        <label for="detWork">Work address</label>
+        <input type="text" id="detWork" placeholder="Start typing — e.g. 1 Martin Place, Sydney"
+               autocomplete="off" oninput="onDetailWorkTyped(this.value)">
+        <div class="hint" id="detWorkHint">Powered by Google Places — we'll use this to consider commute context.</div>
+      </div>
+
+      <div class="details-field">
+        <label for="detBedrooms">Bedrooms</label>
+        <select id="detBedrooms" onchange="onDetailBedrooms(this.value)">
+          <option value="">Select…</option>
+          <option value="studio">Studio</option>
+          <option value="1">1 bed</option>
+          <option value="2">2 bed</option>
+          <option value="3">3 bed</option>
+          <option value="4+">4+ bed</option>
+        </select>
+      </div>
+      <div class="details-field">
+        <label for="detUnit">Preferred unit type</label>
+        <select id="detUnit" onchange="onDetailUnit(this.value)">
+          <option value="">Select…</option>
+          <option value="any">Any</option>
+          <option value="apartment">Apartment</option>
+          <option value="townhouse">Townhouse</option>
+          <option value="house">House</option>
+        </select>
+      </div>
+
+      <div class="details-field full">
+        <div class="input-group" style="margin-bottom:0;">
+          <div class="input-label">
+            <span>Weekly 2BR rent</span>
+            <span class="value" id="detBudgetVal">$700</span>
+          </div>
+          <input type="range" min="300" max="2000" step="10" value="700" id="detBudgetRange"
+                 oninput="onDetailBudgetSlider(this.value)">
+          <div class="slider-labels"><span>$300</span><span>$2000</span></div>
+          <div class="budget-manual">
+            <label for="detBudget">Set exactly</label>
+            <span class="prefix">
+              <span>$</span>
+              <input type="number" id="detBudget" min="100" max="5000" step="10" value="700"
+                     oninput="onDetailBudgetTyped(this.value)">
+            </span>
+            <span class="unit">/week</span>
+          </div>
+        </div>
+        <div class="hint" style="margin-top:10px;">We rank everything against your taste, then fade suburbs materially over budget.</div>
+      </div>
+    </div>
+
+    <div class="details-nav">
+      <button class="details-back" onclick="backToLanding()">← Back</button>
+      <button class="details-cta" id="detailsCta" onclick="continueFromDetails()">
+        Start the quiz →
+      </button>
+    </div>
+  </div>
+</div>
+
 <!-- ============== QUIZ OVERLAY ============== -->
-<div class="quiz-overlay" id="quizOverlay">
+<div class="quiz-overlay hidden" id="quizOverlay" style="display:none;">
   <div class="quiz-shell">
     <div class="quiz-progress-bar"><div class="quiz-progress-fill" id="quizProgress"></div></div>
     <div class="quiz-top">
       <span class="brand">ORBIT</span>
       <span class="quiz-step" id="quizStep">Step 1 / 8</span>
+    </div>
+    <div class="edit-mode-banner" style="margin: 14px 0 0;">
+      <span>✎ Editing your preferences — changes save when you finish</span>
+      <button class="edit-mode-banner-x" onclick="exitEditMode()">Cancel editing</button>
     </div>
     <div id="quizBody">
       <div class="quiz-loading"><span class="spinner"></span>Loading your quiz…</div>
@@ -2023,6 +3419,36 @@ input[type="range"]::-moz-range-thumb {
 
     <div class="divider"></div>
 
+    <!-- Commute — populated by fetchCommutes() after /match when a work
+         address is on userDetails. Hidden when no work coords available. -->
+    <div class="section-label">Commute to work</div>
+    <div class="commute-block" id="commuteBlock">
+      <div class="commute-workline" id="commuteWorkLine">
+        <span class="commute-dot"></span>
+        <span class="commute-addr" id="commuteAddr">No work address set</span>
+      </div>
+      <div class="commute-mode" id="commuteModeToggle" role="tablist" aria-label="Commute mode">
+        <button type="button" class="commute-mode-btn active" data-mode="driving"
+                onclick="onCommuteModeChange('driving')" role="tab" aria-selected="true">Driving</button>
+        <button type="button" class="commute-mode-btn" data-mode="transit"
+                onclick="onCommuteModeChange('transit')" role="tab" aria-selected="false">Transit</button>
+      </div>
+      <div class="commute-status" id="commuteStatus">Waiting for work address…</div>
+
+      <div class="input-group" style="margin-top:14px;">
+        <div class="input-label">
+          <span>How much commute matters</span>
+          <span class="value" id="commute-weight-val">Off</span>
+        </div>
+        <input type="range" min="0" max="100" value="0" step="5" id="commuteWeight"
+               oninput="onCommuteWeightSlider(this.value)">
+        <div class="slider-labels"><span>Off</span><span>A lot</span></div>
+        <p class="sidebar-hint">Penalises suburbs by commute time. Short trips stay neutral; long trips fade out.</p>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
     <div class="section-label">Your fit — live</div>
     <div class="meta-stat">
       <span class="label">Suburbs in budget</span>
@@ -2050,8 +3476,38 @@ input[type="range"]::-moz-range-thumb {
 
     <div class="divider"></div>
 
-    <button class="ghost-btn" onclick="retakeQuiz()">↻ Retake quiz</button>
+    <div class="prefs-stack">
+      <button class="prefs-edit-btn" onclick="startEditPreferences()" title="Tweak your sliders, budget, or work address">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.5 2.5 L13.5 5.5 L5 14 L2 14 L2 11 Z"/>
+          <line x1="9" y1="4" x2="12" y2="7"/>
+        </svg>
+        <span>Edit preferences</span>
+      </button>
+      <button class="prefs-reset-link" onclick="confirmStartOver()" title="Reset all sliders and start a fresh quiz">↻ Start fresh</button>
+    </div>
   </aside>
+
+  <!-- Edit-preferences confirmation modal (deliberate two-step gate) -->
+  <div class="edit-confirm-overlay hidden" id="editConfirmOverlay" onclick="handleEditConfirmBackdrop(event)">
+    <div class="edit-confirm-card" id="editConfirmCard">
+      <div class="edit-confirm-icon">
+        <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10.5 2.5 L13.5 5.5 L5 14 L2 14 L2 11 Z"/>
+          <line x1="9" y1="4" x2="12" y2="7"/>
+        </svg>
+      </div>
+      <div class="edit-confirm-title" id="editConfirmTitle">Edit your preferences?</div>
+      <div class="edit-confirm-body" id="editConfirmBody">
+        You'll go back through Details and the sliders with your current values pre-filled.
+        Your match scores refresh only when you save — you can back out anytime without changing anything.
+      </div>
+      <div class="edit-confirm-actions">
+        <button class="edit-confirm-btn" onclick="cancelEditConfirm()">Cancel</button>
+        <button class="edit-confirm-btn primary" id="editConfirmPrimary" onclick="enterEditMode()">Edit preferences</button>
+      </div>
+    </div>
+  </div>
 
   <div class="map-wrap">
     <div id="map"></div>
@@ -2064,21 +3520,51 @@ input[type="range"]::-moz-range-thumb {
     </div>
 
     <div class="legend">
-      <div class="legend-title">Fit Score</div>
-      <div class="legend-bar"></div>
-      <div class="legend-labels">
+      <div class="legend-title" id="legendTitle">Fit Score</div>
+      <div class="legend-bar" id="legendBar"></div>
+      <div class="legend-labels" id="legendLabels">
         <span>Avoid</span><span>Neutral</span><span>Strong fit</span>
+      </div>
+      <!-- Heatmap mode: colour by personality fit (default), or by commute
+           time (when the user has a work address). Only the "Commute" radio
+           is enabled once commuteData arrives. -->
+      <div class="legend-mode" role="tablist" aria-label="Heatmap mode">
+        <button type="button" class="legend-mode-btn active" data-mode="fit"
+                onclick="onHeatmapModeChange('fit')" role="tab" aria-selected="true">Fit</button>
+        <button type="button" class="legend-mode-btn" data-mode="commute"
+                onclick="onHeatmapModeChange('commute')" role="tab" aria-selected="false"
+                disabled title="Set a work address to enable">Commute</button>
       </div>
       <label class="legend-toggle" for="heatmapToggle">
         <input type="checkbox" id="heatmapToggle" checked
                onchange="toggleHeatmap(this.checked)">
         <span class="legend-switch"><span class="legend-switch-thumb"></span></span>
-        <span class="legend-toggle-label">Heatmap</span>
+        <span class="legend-toggle-label">Heatmap layer</span>
+        <span class="legend-toggle-state" aria-hidden="true"></span>
       </label>
-      <div class="legend-explainer">
-        <div class="legend-explainer-title">How it works</div>
-        <p>Colours blend the 45 scored Sydney suburbs through a 2.4&nbsp;km gaussian, so pixels near multiple suburbs inherit a mix of their fit scores — that's why borders feather instead of cliff-edging. Each suburb's score is mean-centred cosine similarity between its feature vector and your quiz-derived taste vector, softly gated by your weekly budget.</p>
-      </div>
+      <details class="legend-explainer">
+        <summary>
+          <svg class="legend-explainer-caret" viewBox="0 0 10 10" fill="none"
+               stroke="currentColor" stroke-width="1.6"
+               stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <polyline points="3.5,2 6.5,5 3.5,8"/>
+          </svg>
+          <span>Technical detail</span>
+          <span class="legend-explainer-caret-label" aria-hidden="true"></span>
+        </summary>
+        <div class="legend-explainer-body">
+          <ol>
+            <li>Each of 45 Sydney suburbs has a 6-D <span class="mono">taste vector</span> over <em>social_energy, aesthetic, pace, outdoor, culinary, community</em>, built from OSM POI density + per-dimension percentile rank.</li>
+            <li>Your quiz seeds a parallel 6-D user vector. Match score is <span class="mono">mean-centred cosine similarity</span> between the two, rescaled to 0–100, then softly gated by a logistic function of <span class="mono">rent_2br / weekly_budget</span> (0.3–1.0 multiplier; budget-over suburbs fade but don't disappear).</li>
+            <li>The heatmap is a Leaflet <span class="mono">GridLayer</span>. For every ~5 px sample in each 256&times;256 tile we evaluate a Gaussian KDE over all 45 suburb centroids:
+              <span class="formula">fit(p) = Σ wᵢ · scoreᵢ / Σ wᵢ
+wᵢ = exp(−dᵢ² / (2σ²)), σ ≈ 2.4 km</span>
+              with a small neutral prior (weight 0.04 at score 50) so empty regions decay to grey instead of a random neighbour.</li>
+            <li>The scalar <span class="mono">fit</span> is run through a 9-stop red → grey → green ramp; alpha scales with <span class="mono">|fit − 50|</span> so neutral areas read as background. A 2 px per-tile CSS blur removes the sample grid without blurring the basemap.</li>
+          </ol>
+          <p>Toggle off to see the raw CARTO basemap + suburb polygons underneath.</p>
+        </div>
+      </details>
     </div>
 
     <!-- POI category filter — populated dynamically by renderPoiFilter() -->
@@ -2102,6 +3588,14 @@ input[type="range"]::-moz-range-thumb {
   </div>
 
   <aside class="drawer" id="drawer">
+    <button class="drawer-expand" onclick="toggleDrawerWidth()" title="Expand / collapse" aria-label="Expand or collapse drawer">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="9,2 3,2 3,8"/>
+        <polyline points="7,14 13,14 13,8"/>
+        <line x1="3" y1="2" x2="7" y2="6"/>
+        <line x1="13" y1="14" x2="9" y2="10"/>
+      </svg>
+    </button>
     <button class="drawer-close" onclick="closeDrawer()">×</button>
     <div class="drawer-inner" id="drawer-content"></div>
   </aside>
@@ -2125,41 +3619,94 @@ const DIMENSION_LABELS = {
 // ========================================================================
 // State
 // ========================================================================
-let quizQuestions = [];       // from /quiz
-let quizAnswers   = {};       // {question_id: answer_id}
-let currentStep   = 0;        // 0..quizQuestions.length (last step = budget)
+let quizQuestions = [];       // legacy — only used if backend /quiz still drives an old path. Slider quiz ignores this.
+let quizAnswers   = {};       // legacy — kept so any stragglers in the codebase don't crash.
+let currentStep   = 0;        // 0..1: 0 = sliders, 1 = free-text note
 let userBudget    = 700;
+let userNote      = '';       // optional free-text from the final quiz step
+
+// Slider-driven taste vector — directly drives /match and /profile via the
+// user_vector path. Each dim is 0..100, 50 = neutral. Replaces the
+// 7-question multiple-choice quiz with a one-screen direct-input survey
+// for higher fidelity (the user picks exactly how much they value each
+// aspect rather than having an answer nudge a vector by a fixed weight).
+const QUIZ_DIMS = [
+  { key: 'social_energy', label: 'Social energy',
+    hint: 'Bars, clubs, late-night spots, density of nightlife.',
+    lo: 'Quiet streets', hi: 'Always something on' },
+  { key: 'aesthetic',     label: 'Aesthetic & creative',
+    hint: 'Indie cafés, galleries, vintage, design-forward shops.',
+    lo: 'No preference', hi: 'Galleries & indie everything' },
+  { key: 'pace',          label: 'Pace',
+    hint: 'How busy and fast-moving the day-to-day feels.',
+    lo: 'Slow & residential', hi: 'CBD-fast' },
+  { key: 'outdoor',       label: 'Outdoor & active',
+    hint: 'Beaches, parks, surf, gyms, walking/cycling.',
+    lo: 'Indoors is fine', hi: 'Beach & parks every weekend' },
+  { key: 'culinary',      label: 'Food & cuisine',
+    hint: 'Restaurant density and cuisine diversity.',
+    lo: 'I cook at home', hi: 'Foodie heaven' },
+  { key: 'community',     label: 'Community & roots',
+    hint: 'Family-friendly anchors, schools, neighbourly feel.',
+    lo: 'Pass-through is fine', hi: 'Tight-knit neighbourhood' },
+];
+let userSliders = {
+  social_energy: 50, aesthetic: 50, pace: 50,
+  outdoor: 50,      culinary:  50, community: 50,
+};
+
+// Details captured before the quiz. Budget is authoritative here; the quiz
+// no longer asks for it. Work address comes from Google Places Autocomplete
+// (when the key is live) with a plain-text fallback if the script fails to
+// load. All fields are optional — refreshDetailsCta always enables the CTA.
+let userDetails = {
+  name: '',
+  workAddress: '',        // formatted address string
+  workLat: null,
+  workLng: null,
+  bedrooms: '',           // studio | 1 | 2 | 3 | 4+
+  unitType: '',           // apartment | townhouse | house | any
+};
 
 let matchResponse = null;     // { user_vector, suburbs }
-let suburbs       = [];       // [{suburb, lat, lng, match_score, rent_2br, dimensions, positive, negative}]
+let suburbs       = [];       // [{suburb, lat, lng, match_score, rent_2br, dimensions, positive, negative, _baseMatchScore}]
 let userVector    = null;
 let personaProfile = null;    // { headline, summary, wants, source } from /profile
 
 let debounceBudget = null;
 
+// ---- Commute state ------------------------------------------------------
+// Populated after /match by fetchCommutes(), which calls the Google Maps
+// Distance Matrix service client-side (same key as Places Autocomplete) once
+// for driving and once for transit. Cached in-memory so a drawer open or
+// mode toggle doesn't re-hit the API.
+//
+//   commuteData.driving[suburbName] = { minutes, distance_m, status }
+//   commuteData.transit[suburbName] = { minutes, distance_m, status }
+//
+// _baseMatchScore is the un-penalised match_score snapshotted on arrival so
+// we can recompute suburbs[i].match_score = base * commuteMultiplier on every
+// commuteWeight / mode change without ever losing the original value.
+let commuteData       = null;
+let commuteFetchState = 'idle';   // 'idle' | 'loading' | 'ok' | 'error' | 'nowork'
+let commuteMode       = 'driving'; // active mode for drawer chip + commute-heat + penalty
+let commuteWeight     = 0;         // 0..1; 0 = off (default), 1 = full weight
+let heatmapLayerMode  = 'fit';     // 'fit' or 'commute' — what the heatmap colours by
+
 // ========================================================================
 // Quiz flow
 // ========================================================================
-async function bootQuiz() {
-  try {
-    const r = await fetch(API_BASE + '/quiz');
-    if (!r.ok) throw new Error('status ' + r.status);
-    const data = await r.json();
-    quizQuestions = data.questions;
-    currentStep = 0;
-    renderQuizStep();
-  } catch (err) {
-    document.getElementById('quizBody').innerHTML = `
-      <div class="quiz-question">Can't reach the Orbit backend.</div>
-      <p style="color:var(--muted);font-size:13px;line-height:1.5;margin-bottom:20px;">
-        Start it with <code style="background:var(--line-soft);padding:2px 6px;border-radius:4px;">cd backend && uvicorn api:app --reload --port 8000</code> then refresh.
-      </p>
-      <div class="quiz-error show">${err.message}</div>
-    `;
-  }
+// No network call needed — the slider quiz is fully client-driven. We still
+// expose bootQuiz() as a sync function so the landing screen's background
+// "prep" hook keeps its current shape, and retakeQuiz()/continueFromDetails
+// don't need to special-case anything.
+function bootQuiz() {
+  currentStep = 0;
+  renderQuizStep();
 }
 
-function totalSteps() { return quizQuestions.length + 1; }
+// Slider quiz has exactly two steps: sliders, then free-text.
+function totalSteps() { return 2; }
 
 function renderQuizStep() {
   const step = currentStep;
@@ -2167,79 +3714,158 @@ function renderQuizStep() {
   document.getElementById('quizStep').textContent = `Step ${step + 1} / ${total}`;
   document.getElementById('quizProgress').style.width = ((step + 1) / total * 100) + '%';
 
-  if (step < quizQuestions.length) {
-    const q = quizQuestions[step];
-    const selected = quizAnswers[q.id];
+  if (step === 0) {
+    // Six sliders on one page, one per dimension. Back goes to the Details
+    // screen so users can adjust name/budget/work without losing slider state.
     document.getElementById('quizBody').innerHTML = `
-      <div class="quiz-question">${escapeHTML(q.text)}</div>
-      <div class="quiz-answers">
-        ${q.answers.map(a => `
-          <button class="quiz-answer ${selected === a.id ? 'selected' : ''}"
-                  onclick="pickAnswer('${q.id}','${a.id}')">
-            ${escapeHTML(a.label)}
-          </button>
+      <div class="quiz-question">How much do you value each of these?</div>
+      <p style="color:var(--muted);font-size:13px;line-height:1.5;margin-bottom:20px;">
+        Drag the sliders to tell Orbit what matters. 50 is neutral. You can
+        value multiple things at once — the matcher only compares dimensions
+        you care about, so neutral sliders won't spuriously pull you anywhere.
+      </p>
+      <div class="dim-slider-list">
+        ${QUIZ_DIMS.map(d => `
+          <div class="dim-slider-row">
+            <div class="dim-slider-top">
+              <span class="dim-slider-label">${escapeHTML(d.label)}</span>
+              <span class="dim-slider-val" id="dimval-${d.key}">${userSliders[d.key]}</span>
+            </div>
+            <div class="dim-slider-hint">${escapeHTML(d.hint)}</div>
+            <input type="range" min="0" max="100" step="1" value="${userSliders[d.key]}"
+                   class="dim-slider" data-dim="${d.key}"
+                   oninput="onDimSlider('${d.key}', this.value)">
+            <div class="dim-slider-ends">
+              <span>${escapeHTML(d.lo)}</span>
+              <span>${escapeHTML(d.hi)}</span>
+            </div>
+          </div>
         `).join('')}
+
+        <div class="quiz-commute-divider"></div>
+
+        <div class="dim-slider-row">
+          <div class="dim-slider-top">
+            <span class="dim-slider-label">How much does commute matter?</span>
+            <span class="dim-slider-val" id="quizCommuteWeightLabel">${quizCommuteWeightLabel()}</span>
+          </div>
+          <div class="dim-slider-hint">We'll nudge suburbs with long commutes down your list without hiding them.</div>
+          <input type="range" min="0" max="100" step="5" value="${Math.round(commuteWeight * 100)}"
+                 class="dim-slider" id="quizCommuteWeightSlider"
+                 oninput="onQuizCommuteWeight(this.value)">
+          <div class="dim-slider-ends">
+            <span>Off</span>
+            <span>A lot</span>
+          </div>
+        </div>
+
+        <div class="dim-slider-row">
+          <div class="dim-slider-top">
+            <span class="dim-slider-label">How do you get to work?</span>
+            <div class="commute-mode" id="quizCommuteModeToggle" role="tablist" aria-label="Commute mode">
+              <button type="button" class="commute-mode-btn ${commuteMode === 'driving' ? 'active' : ''}" data-mode="driving"
+                      onclick="onQuizCommuteMode('driving')" role="tab"
+                      aria-selected="${commuteMode === 'driving' ? 'true' : 'false'}">Driving</button>
+              <button type="button" class="commute-mode-btn ${commuteMode === 'transit' ? 'active' : ''}" data-mode="transit"
+                      onclick="onQuizCommuteMode('transit')" role="tab"
+                      aria-selected="${commuteMode === 'transit' ? 'true' : 'false'}">Transit</button>
+            </div>
+          </div>
+          <div class="dim-slider-hint">Which mode we use when colouring the heatmap by commute and when flagging long trips.</div>
+        </div>
       </div>
       <div class="quiz-nav">
-        <button class="quiz-back" onclick="quizBack()" ${step === 0 ? 'disabled' : ''}>← Back</button>
-        <button class="quiz-cta" onclick="quizNext()" ${selected ? '' : 'disabled'}>Next →</button>
+        <button class="quiz-back" onclick="quizBack()">← Edit details</button>
+        <button class="quiz-cta" onclick="quizNext()">Next →</button>
       </div>
     `;
   } else {
-    // Final step — budget
+    // Final step — free-text "anything else?". Budget lives on Details.
     document.getElementById('quizBody').innerHTML = `
-      <div class="quiz-question">Last one — what's your weekly 2BR rent budget?</div>
+      <div class="quiz-question">Anything else we should know?</div>
       <p style="color:var(--muted);font-size:13px;line-height:1.5;margin-bottom:22px;">
-        We'll rank every suburb against your taste, then fade anything materially over budget.
-        You'll still see unaffordable strong fits — they just sink to the bottom.
+        Optional. Tell us what you're really after — a specific vibe, a deal-breaker, a
+        suburb you've already ruled out. We'll keep it on file alongside your taste vector.
       </p>
-      <div class="quiz-budget-wrap">
-        <div class="quiz-budget-label">
-          <span>Weekly rent</span>
-          <span class="val" id="quizBudgetVal">$${userBudget}</span>
-        </div>
-        <input type="range" min="300" max="2000" step="10" value="${userBudget}" id="quizBudget"
-               oninput="onQuizBudgetSlider(this.value)">
-        <div class="slider-labels"><span>$300</span><span>$2000</span></div>
-        <div class="budget-manual">
-          <label for="quizBudgetInput">Set exactly</label>
-          <span class="prefix">
-            <span>$</span>
-            <input type="number" id="quizBudgetInput" min="100" max="5000" step="10" value="${userBudget}"
-                   oninput="onQuizBudgetTyped(this.value)">
-          </span>
-          <span class="unit">/week</span>
-        </div>
-      </div>
+      <textarea id="quizNote" class="quiz-note"
+                placeholder="e.g. I cycle to work, want a quieter street, hate places that empty out on weekends..."
+                oninput="onNoteTyped(this.value)">${escapeHTML(userNote || '')}</textarea>
       <div class="quiz-nav">
         <button class="quiz-back" onclick="quizBack()">← Back</button>
-        <button class="quiz-cta" onclick="submitQuiz()">Show me my Sydney →</button>
+        <button class="quiz-cta" onclick="submitQuiz()">${editMode ? 'Save changes →' : 'Show me my Sydney →'}</button>
       </div>
       <div class="quiz-error" id="quizError"></div>
     `;
   }
 }
 
-function pickAnswer(qId, aId) {
-  quizAnswers[qId] = aId;
-  // auto-advance after a short pulse so the selection registers visually
-  renderQuizStep();
-  setTimeout(() => {
-    if (currentStep < quizQuestions.length) quizNext();
-  }, 180);
+function onNoteTyped(v) { userNote = v; }
+
+function onDimSlider(key, raw) {
+  const n = parseInt(raw, 10);
+  if (!Number.isFinite(n)) return;
+  userSliders[key] = Math.max(0, Math.min(100, n));
+  const v = document.getElementById('dimval-' + key);
+  if (v) v.textContent = userSliders[key];
 }
 
+// ---- Quiz-side commute controls --------------------------------------
+// Mirror the sidebar's commute weight + mode controls inside the quiz so
+// users decide on commute weighting at the same time they're setting their
+// taste vector. Writes the same global state as the sidebar handlers; the
+// sidebar's renderCommutePanel() picks it up on submit.
+function quizCommuteWeightLabel() {
+  if (commuteWeight === 0) return 'Off';
+  if (commuteWeight < 0.34) return 'A little';
+  if (commuteWeight < 0.67) return 'Some';
+  return 'A lot';
+}
+
+function onQuizCommuteWeight(raw) {
+  const n = parseInt(raw, 10);
+  commuteWeight = Math.max(0, Math.min(1, (Number.isFinite(n) ? n : 0) / 100));
+  const lab = document.getElementById('quizCommuteWeightLabel');
+  if (lab) lab.textContent = quizCommuteWeightLabel();
+  // Keep the sidebar slider in sync in case it's underneath (edit mode).
+  const sb = document.getElementById('commuteWeight');
+  if (sb) sb.value = Math.round(commuteWeight * 100);
+  const sbLab = document.getElementById('commute-weight-val');
+  if (sbLab) sbLab.textContent = quizCommuteWeightLabel();
+}
+
+function onQuizCommuteMode(mode) {
+  if (mode !== 'driving' && mode !== 'transit') return;
+  commuteMode = mode;
+  // Repaint quiz pill state.
+  document.querySelectorAll('#quizCommuteModeToggle .commute-mode-btn').forEach(btn => {
+    const on = btn.dataset.mode === mode;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  // Mirror to the sidebar toggle so the two stay consistent.
+  document.querySelectorAll('#commuteModeToggle .commute-mode-btn').forEach(btn => {
+    const on = btn.dataset.mode === mode;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+}
+
+// Legacy shim — left in so any stray caller in the codebase doesn't ReferenceError.
+function pickAnswer(_qId, _aId) { /* no-op in slider mode */ }
+
 function quizNext() {
-  if (currentStep < quizQuestions.length) {
-    const q = quizQuestions[currentStep];
-    if (!quizAnswers[q.id]) return;
-  }
+  if (currentStep >= totalSteps() - 1) return;
   currentStep++;
   renderQuizStep();
 }
 
 function quizBack() {
-  if (currentStep === 0) return;
+  if (currentStep === 0) {
+    // From the first quiz question, Back opens the Details screen so the user
+    // can tweak name / work address / budget without losing quiz progress.
+    showDetails();
+    return;
+  }
   currentStep--;
   renderQuizStep();
 }
@@ -2250,6 +3876,9 @@ async function submitQuiz() {
   `;
   try {
     await fetchMatch(userBudget);
+    // Snapshot the un-penalised base scores so the commute-weight slider
+    // can re-derive match_score from them without ever mutating the truth.
+    for (const s of suburbs) { s._baseMatchScore = s.match_score; }
     // Sync sidebar budget controls with the quiz budget.
     const sb  = document.getElementById('budget');
     const sbv = document.getElementById('budget-val');
@@ -2258,9 +3887,26 @@ async function submitQuiz() {
     if (sbv) sbv.textContent = '$' + userBudget;
     if (sbi) sbi.value = userBudget;
     finishQuiz();
+    // Paint the sidebar commute panel to its 'waiting for Google' state,
+    // then fire the matrix call. Both persona and commute run in parallel.
+    renderCommutePanel();
+    fetchCommutes();
     // Kick off the persona call in the background — the map's already
     // usable, we just swap in the AI copy when it lands.
     refreshPersona();
+    // If this submit came from edit mode, drop the flag + restore default
+    // copy on the Details overlay so the next entry isn't stuck on
+    // "Continue to sliders →". finishQuiz() already hid the overlays.
+    if (editMode) {
+      editMode = false;
+      document.body.classList.remove('edit-mode');
+      const cta = document.getElementById('detailsCta');
+      if (cta) cta.textContent = 'Start the quiz →';
+      const title = document.getElementById('detailsTitle');
+      if (title) title.textContent = 'First, a quick intro.';
+      const sub = document.getElementById('detailsSub');
+      if (sub) sub.textContent = 'We use these to personalise your map and filter listings. Your work address anchors commute context; your budget keeps the match honest.';
+    }
   } catch (err) {
     document.getElementById('quizBody').innerHTML = `
       <div class="quiz-question">Match failed.</div>
@@ -2284,30 +3930,144 @@ function finishQuiz() {
   renderAll();
 }
 
+// ========================================================================
+// Edit preferences — deliberate re-entry into Details + Quiz flow
+// ========================================================================
+// Unlike retakeQuiz(), edit mode PRESERVES every answer. Users re-enter the
+// Details overlay with their name/work/budget/household pre-filled, move
+// into the slider screen with their existing vector, and save to refetch
+// /match + commutes. Intentionally two-step (button → confirm modal →
+// enter) so it's hard to trigger by accident.
+let editMode = false;
+
+function startEditPreferences() {
+  const modal = document.getElementById('editConfirmOverlay');
+  if (!modal) return;
+  modal.style.pointerEvents = 'auto';
+  modal.classList.remove('hidden');
+  // Focus the primary CTA so Enter confirms.
+  const primary = document.getElementById('editConfirmPrimary');
+  if (primary) setTimeout(() => primary.focus(), 40);
+}
+
+function cancelEditConfirm() {
+  const modal = document.getElementById('editConfirmOverlay');
+  if (!modal) return;
+  modal.classList.add('hidden');
+}
+
+function handleEditConfirmBackdrop(ev) {
+  // Click outside the card = cancel. Clicks on the card bubble to here too,
+  // so short-circuit anything whose ancestor is the card.
+  if (ev.target && ev.target.id === 'editConfirmOverlay') {
+    cancelEditConfirm();
+  }
+}
+
+function enterEditMode() {
+  cancelEditConfirm();
+  editMode = true;
+  document.body.classList.add('edit-mode');
+  // Swap the Details CTA + title copy so the user knows saves, not starts.
+  const cta = document.getElementById('detailsCta');
+  if (cta) cta.textContent = 'Continue to sliders →';
+  const title = document.getElementById('detailsTitle');
+  if (title) title.textContent = 'Edit your details.';
+  const sub = document.getElementById('detailsSub');
+  if (sub) sub.textContent = 'Tweak anything you like. Sliders come next — everything saves together when you finish.';
+  closeDrawer();
+  // showDetails already rehydrates every field from state, so the user
+  // sees their current answers as-is. We DO NOT reset userSliders or
+  // userDetails — that's the whole point of edit mode vs. retake.
+  showDetails();
+}
+
+function exitEditMode() {
+  editMode = false;
+  document.body.classList.remove('edit-mode');
+  // Restore default copy on the Details CTA and heading for the next
+  // fresh run (cheap to always do).
+  const cta = document.getElementById('detailsCta');
+  if (cta) cta.textContent = 'Start the quiz →';
+  const title = document.getElementById('detailsTitle');
+  if (title) title.textContent = 'First, a quick intro.';
+  const sub = document.getElementById('detailsSub');
+  if (sub) sub.textContent = 'We use these to personalise your map and filter listings. Your work address anchors commute context; your budget keeps the match honest.';
+  // Dismiss whichever overlay is currently visible.
+  const det = document.getElementById('detailsOverlay');
+  if (det && !det.classList.contains('hidden')) {
+    det.classList.add('hidden');
+    setTimeout(() => { det.style.display = 'none'; }, 650);
+  }
+  const quiz = document.getElementById('quizOverlay');
+  if (quiz && !quiz.classList.contains('hidden')) {
+    quiz.classList.add('hidden');
+    setTimeout(() => { quiz.style.display = 'none'; }, 650);
+  }
+}
+
+// The old destructive "Retake quiz" path, now behind a confirm.
+function confirmStartOver() {
+  const ok = window.confirm(
+    'Start fresh? This resets every slider back to neutral and clears your note. '
+    + 'Your work address and budget stay.'
+  );
+  if (ok) retakeQuiz();
+}
+
 function retakeQuiz() {
   closeDrawer();
   currentStep = 0;
-  quizAnswers = {};
+  // Reset every slider back to neutral (50). The free-text note is kept
+  // on purpose — re-taking is usually a "I want to try a different vibe"
+  // move, not a "throw away everything I typed" move.
+  userSliders = {
+    social_energy: 50, aesthetic: 50, pace: 50,
+    outdoor: 50,      culinary:  50, community: 50,
+  };
+  // Drop cached commutes so the next /match refetches against whatever
+  // work address the user sets on the Details screen this time around.
+  commuteData = null;
+  commuteFetchState = 'idle';
+  commuteMode = 'driving';
+  commuteWeight = 0;
+  heatmapLayerMode = 'fit';
+  const cwSlider = document.getElementById('commuteWeight');
+  if (cwSlider) cwSlider.value = 0;
+  const cwVal = document.getElementById('commute-weight-val');
+  if (cwVal) cwVal.textContent = 'Off';
+  // Restore the heatmap mode toggle to 'Fit' + disable 'Commute' until
+  // the fresh fetch lands.
+  onHeatmapModeChange('fit');
+  const commuteBtn = document.querySelector('.legend-mode-btn[data-mode="commute"]');
+  if (commuteBtn) { commuteBtn.disabled = true; commuteBtn.title = 'Set a work address to enable'; }
+  // And reset the mode pill to "Driving".
+  document.querySelectorAll('#commuteModeToggle .commute-mode-btn').forEach(btn => {
+    const on = btn.dataset.mode === 'driving';
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  renderCommutePanel();
   personaProfile = null;
   const pc = document.getElementById('personaCard');
   if (pc) pc.style.display = 'none';
   document.getElementById('quizOverlay').style.display = 'flex';
   document.getElementById('quizOverlay').classList.remove('hidden');
-  if (quizQuestions.length === 0) {
-    bootQuiz();
-  } else {
-    renderQuizStep();
-  }
+  bootQuiz();
 }
 
 // ========================================================================
 // API calls
 // ========================================================================
 async function fetchMatch(budget) {
+  // Slider quiz writes directly into userSliders, so we skip the
+  // answers->score_user translation on the backend and send the
+  // six-dim vector straight through. Backend accepts user_vector
+  // as an alternative to answers on /match.
   const r = await fetch(API_BASE + '/match', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({answers: quizAnswers, budget: budget, limit: 45}),
+    body: JSON.stringify({user_vector: userSliders, budget: budget, limit: 45}),
   });
   if (!r.ok) {
     const txt = await r.text();
@@ -2328,14 +4088,353 @@ async function fetchSuburb(name) {
   return r.json();
 }
 
+// --- /suburb payload cache (for instant drawer opens) --------------------
+// The backend's /suburb endpoint does per-user explanation generation
+// (+ optional LLM persona summary), which makes it the slowest hop in the
+// whole app. We prewarm the top-ranked suburbs after each /match response
+// so the first few clicks open *instantly* — no spinner, no network wait.
+// The cache is keyed by (suburb name, user vector + persona signature),
+// so it invalidates automatically when the user re-takes the quiz.
+const suburbCache = new Map();  // name -> { sig, payload }
+
+function userVectorSignature() {
+  if (!userVector) return '';
+  const dims = DIMENSIONS
+    .map(d => `${d}:${Math.round((userVector[d] || 0) * 10) / 10}`)
+    .join('|');
+  const persona = personaProfile && personaProfile.summary
+    ? personaProfile.summary.slice(0, 48)
+    : '';
+  return `${dims}::${persona}`;
+}
+
+async function fetchSuburbCached(name) {
+  const sig = userVectorSignature();
+  const hit = suburbCache.get(name);
+  if (hit && hit.sig === sig) return hit.payload;
+  const payload = await fetchSuburb(name);
+  suburbCache.set(name, { sig, payload });
+  return payload;
+}
+
+// Best-effort background prefetch of the top-N ranked suburbs. Swallows
+// errors because a failure here is purely a non-win — the click handler
+// will refetch on miss. De-dupes against the current cache signature so
+// stale entries from a previous quiz never masquerade as fresh.
+function prefetchTopSuburbs(n = 3) {
+  if (!suburbs || !suburbs.length) return;
+  const sig = userVectorSignature();
+  const top = [...suburbs]
+    .sort((a, b) => b.match_score - a.match_score)
+    .slice(0, n);
+  for (const s of top) {
+    const hit = suburbCache.get(s.suburb);
+    if (hit && hit.sig === sig) continue;
+    fetchSuburb(s.suburb)
+      .then(payload => { suburbCache.set(s.suburb, { sig, payload }); })
+      .catch(() => { /* non-fatal */ });
+  }
+}
+
 async function fetchProfile() {
+  // Same user_vector path as /match. The backend still accepts an
+  // optional `answers` block for context, but with the slider survey
+  // we don't have discrete answers to hand in — the vector carries all
+  // the signal the persona generator needs.
   const r = await fetch(API_BASE + '/profile', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({answers: quizAnswers}),
+    body: JSON.stringify({user_vector: userSliders}),
   });
   if (!r.ok) throw new Error('profile ' + r.status);
   return r.json();
+}
+
+// ========================================================================
+// Commute — Google Distance Matrix (driving + transit) per suburb
+// ========================================================================
+// We hit DistanceMatrixService client-side using the same Google Maps key
+// that powers Places Autocomplete on the Details screen. One call per
+// transport mode covers all 45 suburbs, batched in chunks of 25 because the
+// Maps JS service caps elements per request at 25 origins × 25 destinations
+// (we have 1 origin, so we just chunk destinations).
+//
+// Results land in `commuteData = { driving: { suburb: {...} }, transit: ... }`.
+// `applyCommutePenalty()` then re-derives suburbs[i].match_score from the
+// snapshot in `_baseMatchScore` so changing the commute weight slider feels
+// instant — no refetch.
+
+const COMMUTE_MODES = ['driving', 'transit'];
+const DM_BATCH_SIZE = 25;
+
+function commuteOriginAvailable() {
+  return userDetails.workLat != null
+      && userDetails.workLng != null
+      && Number.isFinite(userDetails.workLat)
+      && Number.isFinite(userDetails.workLng);
+}
+
+function commuteAddressLabel() {
+  if (!userDetails.workAddress) return 'No work address set';
+  // Trim long formatted addresses for the sidebar pill.
+  const a = userDetails.workAddress;
+  return a.length > 48 ? a.slice(0, 45) + '…' : a;
+}
+
+// google.maps may not be loaded yet when /match returns (the Details screen
+// loads it lazily). Wait up to ~6s for the library to be ready before
+// giving up. Resolves true if available, false on timeout.
+function waitForGoogleMaps(maxMs = 6000) {
+  return new Promise(resolve => {
+    if (window.google && window.google.maps) return resolve(true);
+    const start = Date.now();
+    const t = setInterval(() => {
+      if (window.google && window.google.maps) { clearInterval(t); resolve(true); }
+      else if (Date.now() - start > maxMs) { clearInterval(t); resolve(false); }
+    }, 100);
+  });
+}
+
+// Wrap one DistanceMatrix call (1 origin, ≤25 destinations, single mode)
+// in a promise. The transit response can include departureTime — we omit
+// it and let Google use 'now', which is what the renter cares about anyway.
+function distanceMatrixCall(origin, destinations, travelMode) {
+  return new Promise((resolve) => {
+    const svc = new google.maps.DistanceMatrixService();
+    const req = {
+      origins: [origin],
+      destinations,
+      travelMode,
+      unitSystem: google.maps.UnitSystem.METRIC,
+    };
+    if (travelMode === google.maps.TravelMode.TRANSIT) {
+      req.transitOptions = { departureTime: new Date() };
+    }
+    svc.getDistanceMatrix(req, (resp, status) => {
+      if (status !== 'OK' || !resp || !resp.rows || !resp.rows[0]) {
+        resolve({ ok: false, status, results: [] });
+        return;
+      }
+      const elements = resp.rows[0].elements || [];
+      resolve({ ok: true, status, results: elements });
+    });
+  });
+}
+
+async function fetchCommutes() {
+  if (!commuteOriginAvailable()) {
+    commuteFetchState = 'nowork';
+    renderCommutePanel();
+    return;
+  }
+  // Need the Maps JS library loaded (Places does that after Details). If
+  // user skipped Details, ensureGoogleScript hasn't fired yet — try to
+  // kick it off here as a fallback.
+  if (!(window.google && window.google.maps)) {
+    try { ensureGoogleScript(); } catch (e) { /* non-fatal */ }
+  }
+  const ready = await waitForGoogleMaps();
+  if (!ready) {
+    commuteFetchState = 'error';
+    renderCommutePanel();
+    return;
+  }
+
+  commuteFetchState = 'loading';
+  renderCommutePanel();
+
+  const origin = { lat: userDetails.workLat, lng: userDetails.workLng };
+  // Snapshot the current suburb list so a /match refresh mid-fetch doesn't
+  // confuse the index alignment.
+  const targets = (suburbs || []).map(s => ({ name: s.suburb, lat: s.lat, lng: s.lng }));
+  if (!targets.length) {
+    commuteFetchState = 'error';
+    renderCommutePanel();
+    return;
+  }
+
+  const out = { driving: {}, transit: {} };
+
+  for (const mode of COMMUTE_MODES) {
+    const tm = mode === 'driving'
+      ? google.maps.TravelMode.DRIVING
+      : google.maps.TravelMode.TRANSIT;
+
+    // Chunk destinations to stay within the per-request element cap.
+    for (let i = 0; i < targets.length; i += DM_BATCH_SIZE) {
+      const chunk = targets.slice(i, i + DM_BATCH_SIZE);
+      const dests = chunk.map(t => ({ lat: t.lat, lng: t.lng }));
+      const { ok, results } = await distanceMatrixCall(origin, dests, tm);
+      if (!ok) continue; // partial results stay missing, that's OK
+      results.forEach((el, idx) => {
+        const t = chunk[idx];
+        if (el.status === 'OK' && el.duration) {
+          out[mode][t.name] = {
+            minutes: el.duration.value / 60,
+            distance_m: el.distance ? el.distance.value : null,
+            status: 'OK',
+          };
+        } else {
+          out[mode][t.name] = { minutes: null, distance_m: null, status: el.status || 'NO_DATA' };
+        }
+      });
+    }
+  }
+
+  commuteData = out;
+  commuteFetchState = 'ok';
+  applyCommutePenalty();
+  enableCommuteHeatmapButton();
+  renderCommutePanel();
+  // Re-render so heatmap, top-10, polygons all reflect the new effective scores.
+  if (typeof renderAll === 'function') renderAll();
+  // If a drawer is already open, its chip is showing "…" placeholders —
+  // swap those in-place rather than closing / reopening.
+  refreshDrawerCommuteChip();
+}
+
+// ---- Score blending -----------------------------------------------------
+// Each suburb keeps its un-penalised score in s._baseMatchScore. The
+// effective match_score is base × multiplier(minutes, weight), where the
+// multiplier is a smooth curve:
+//   weight = 0  → multiplier always 1 (no penalty)
+//   weight = 1 → multiplier ranges from 1.0 (commute ≈ 0) down to ~0.3
+//                 (commute ≥ ~75 min)
+// Suburbs with no commute data leave the base score untouched.
+function commuteMultiplier(minutes, weight) {
+  if (weight <= 0 || minutes == null || !Number.isFinite(minutes)) return 1;
+  // Logistic falloff: 0 at 75min, 0.5 at 35min, ~1 at 5min.
+  const k = 0.09;          // steepness
+  const m0 = 35;            // midpoint
+  const raw = 1 / (1 + Math.exp(k * (minutes - m0)));   // 1 → 0
+  // Floor the multiplier so even an "unaffordable commute" suburb stays
+  // visible in the heatmap, just heavily de-ranked. Mirrors the budget
+  // gate's 0.3 floor in matcher.py.
+  const floor = 0.3;
+  const ramped = floor + (1 - floor) * raw;             // floor → 1
+  // Blend with weight: weight 0 → no change, weight 1 → full ramped value.
+  return 1 + (ramped - 1) * weight;
+}
+
+function applyCommutePenalty() {
+  if (!suburbs || !suburbs.length) return;
+  const w = commuteWeight;
+  for (const s of suburbs) {
+    if (s._baseMatchScore == null) s._baseMatchScore = s.match_score;
+    const cd = commuteData ? commuteData[commuteMode] : null;
+    const min = cd && cd[s.suburb] ? cd[s.suburb].minutes : null;
+    s.match_score = s._baseMatchScore * commuteMultiplier(min, w);
+  }
+}
+
+// ---- Sidebar / legend hooks --------------------------------------------
+function renderCommutePanel() {
+  const addrEl = document.getElementById('commuteAddr');
+  const stEl   = document.getElementById('commuteStatus');
+  if (addrEl) addrEl.textContent = commuteAddressLabel();
+  if (!stEl) return;
+  if (!commuteOriginAvailable()) {
+    stEl.textContent = 'Add a work address on the Details screen to see commute times.';
+    stEl.className = 'commute-status muted';
+    return;
+  }
+  if (commuteFetchState === 'loading') {
+    stEl.textContent = 'Asking Google for driving + transit times…';
+    stEl.className = 'commute-status loading';
+    return;
+  }
+  if (commuteFetchState === 'error') {
+    stEl.textContent = 'Couldn\'t reach Google Distance Matrix. Times unavailable.';
+    stEl.className = 'commute-status error';
+    return;
+  }
+  if (commuteFetchState === 'ok' && commuteData) {
+    // Median + best/worst quick summary.
+    const cd = commuteData[commuteMode] || {};
+    const mins = Object.values(cd).map(v => v.minutes).filter(m => Number.isFinite(m));
+    if (!mins.length) {
+      stEl.textContent = `${commuteMode === 'driving' ? 'Driving' : 'Transit'} times unavailable for these suburbs.`;
+      stEl.className = 'commute-status muted';
+      return;
+    }
+    mins.sort((a, b) => a - b);
+    const best = Math.round(mins[0]);
+    const worst = Math.round(mins[mins.length - 1]);
+    const median = Math.round(mins[Math.floor(mins.length / 2)]);
+    stEl.innerHTML = `
+      Median <strong>${median}m</strong>
+      <span class="commute-range">· best ${best}m · worst ${worst}m</span>
+    `;
+    stEl.className = 'commute-status';
+    return;
+  }
+  stEl.textContent = 'Waiting for work address…';
+  stEl.className = 'commute-status muted';
+}
+
+function onCommuteModeChange(mode) {
+  if (mode !== 'driving' && mode !== 'transit') return;
+  commuteMode = mode;
+  document.querySelectorAll('#commuteModeToggle .commute-mode-btn').forEach(btn => {
+    const on = btn.dataset.mode === mode;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  applyCommutePenalty();
+  renderCommutePanel();
+  if (typeof renderAll === 'function') renderAll();
+  // Update drawer chip in place if a suburb is open.
+  refreshDrawerCommuteChip();
+}
+
+function onCommuteWeightSlider(raw) {
+  const n = parseInt(raw, 10);
+  commuteWeight = Math.max(0, Math.min(1, (Number.isFinite(n) ? n : 0) / 100));
+  const lab = document.getElementById('commute-weight-val');
+  if (lab) {
+    if (commuteWeight === 0) lab.textContent = 'Off';
+    else if (commuteWeight < 0.34) lab.textContent = 'A little';
+    else if (commuteWeight < 0.67) lab.textContent = 'Some';
+    else lab.textContent = 'A lot';
+  }
+  applyCommutePenalty();
+  if (typeof renderAll === 'function') renderAll();
+}
+
+function enableCommuteHeatmapButton() {
+  const btn = document.querySelector('.legend-mode-btn[data-mode="commute"]');
+  if (!btn) return;
+  btn.disabled = false;
+  btn.removeAttribute('title');
+}
+
+function onHeatmapModeChange(mode) {
+  if (mode !== 'fit' && mode !== 'commute') return;
+  if (mode === 'commute' && (!commuteData || commuteFetchState !== 'ok')) return;
+  heatmapLayerMode = mode;
+  document.querySelectorAll('.legend-mode-btn').forEach(btn => {
+    const on = btn.dataset.mode === mode;
+    btn.classList.toggle('active', on);
+    btn.setAttribute('aria-selected', on ? 'true' : 'false');
+  });
+  // Update legend title + labels to match the mode.
+  const title  = document.getElementById('legendTitle');
+  const labels = document.getElementById('legendLabels');
+  if (title)  title.textContent  = (mode === 'commute') ? 'Commute time' : 'Fit Score';
+  if (labels) labels.innerHTML   = (mode === 'commute')
+    ? '<span>Long</span><span>~30 min</span><span>Short</span>'
+    : '<span>Avoid</span><span>Neutral</span><span>Strong fit</span>';
+  if (typeof renderHeat === 'function') renderHeat();
+}
+
+// Returns the commute "score" (0..100, higher = shorter commute) for a
+// given suburb. Used by the commute heatmap mode. Maps 0→100 over 0..75min,
+// linearly. Values above 75min clamp to 0.
+function commuteScoreFromMinutes(min) {
+  if (min == null || !Number.isFinite(min)) return 50; // neutral if unknown
+  const SHORT = 5, LONG = 75;
+  const t = (min - SHORT) / (LONG - SHORT);
+  return Math.max(0, Math.min(100, (1 - t) * 100));
 }
 
 async function refreshPersona() {
@@ -2594,22 +4693,21 @@ function ensureMap() {
   // shown" whenever the user crosses the detail-zoom threshold.
   map.on('zoomend', renderListingsDebounced);
 
-  // POIs: lazy-load once, then re-render on every pan/zoom via a rAF
-  // coalescer. `move` fires continuously during drag inertia — we collapse
-  // those into one render per frame (at most 60fps). Marker diffing keeps
-  // the per-frame cost close to zero when nothing in the viewport changed,
-  // so panning feels like the POIs are already there instead of popping in.
-  // Zoom animation is skipped (Leaflet transforms existing markers in CSS);
-  // we only re-grid at zoomend when the cell size changes.
+  // POIs: render once at load + on every zoomend. We explicitly DO NOT
+  // re-render on 'move' any more — the grid-cell winners are computed in
+  // pixel space at the current zoom, so panning doesn't change the set of
+  // chosen POIs. Once markers are mounted, Leaflet transforms them on pan
+  // for free, so dropping the move-driven render makes panning genuinely
+  // seamless (no more pop-in/pop-out as markers enter/leave the viewport).
+  // We re-grid at zoomend since cell size + which POIs win per cell both
+  // depend on zoom.
   loadPois();
   map.on('zoomstart', () => { _zoomAnimating = true; });
   map.on('zoomend', () => {
     _zoomAnimating = false;
-    // Re-grid with the new zoom level's cell size. Bypass the rAF gate so
-    // the first frame after zoom shows the new selection immediately.
+    // Re-grid with the new zoom level's cell size.
     renderPois();
   });
-  map.on('move', schedulePoiRender);
 
   // Custom wheel zoom handler. Replaces Leaflet's ScrollWheelZoom (which
   // accumulates deltaY over wheelDebounceTime and can produce 1.5-level
@@ -2643,9 +4741,17 @@ function ensureMap() {
   // container; ResizeObserver fires on every frame the container changes
   // so tiles, the heatmap canvas, and listing/POI markers all stay aligned
   // without snapping. `pan: false` keeps the user's centre point stable.
+  // `debounceMoveend: true` coalesces the ~25 moveends Leaflet would
+  // otherwise fire during the 0.42s grid transition into one — otherwise
+  // the first of them can falsely wake up any "wait for the fly to
+  // settle" listeners before the fly has actually started moving.
   if (typeof ResizeObserver !== 'undefined') {
     const ro = new ResizeObserver(() => {
-      if (map) map.invalidateSize({ pan: false, animate: false });
+      if (map) map.invalidateSize({
+        pan: false,
+        animate: false,
+        debounceMoveend: true,
+      });
     });
     ro.observe(map.getContainer());
   }
@@ -2812,6 +4918,20 @@ const LAT_KM    = 111, LNG_KM = 93;
 const SIGMA_KM  = 2.4;
 const TWO_SIG2  = 2 * SIGMA_KM * SIGMA_KM;
 
+// Per-suburb value used by the heatmap. In 'fit' mode this is the
+// personality match score (possibly already commute-penalised). In
+// 'commute' mode it's a 0..100 "shortness" score derived from the active
+// mode's travel minutes — same gradient, so short-commute suburbs render
+// green and long-commute ones render red.
+function suburbHeatValue(s) {
+  if (heatmapLayerMode === 'commute' && commuteData) {
+    const cd = commuteData[commuteMode];
+    const rec = cd ? cd[s.suburb] : null;
+    return commuteScoreFromMinutes(rec ? rec.minutes : null);
+  }
+  return s.match_score;
+}
+
 function computeFit(lat, lng) {
   let totalW = 0, weighted = 0;
   // N=45 suburbs — cheap enough to walk every one per pixel. Skipping the
@@ -2823,7 +4943,7 @@ function computeFit(lat, lng) {
     const d2 = dLatKm * dLatKm + dLngKm * dLngKm;
     const w = Math.exp(-d2 / TWO_SIG2);
     totalW   += w;
-    weighted += w * s.match_score;
+    weighted += w * suburbHeatValue(s);
   }
   // Very soft baseline pull — only affects the far outer ring of the bbox
   // (20km+ from any suburb) where gaussian weights are already tiny. Inside
@@ -3310,14 +5430,13 @@ function renderPois() {
     indexPois();
   }
 
-  const bounds = map.getBounds();
-  const sw = bounds.getSouthWest();
-  const ne = bounds.getNorthEast();
-  const minLat = sw.lat, maxLat = ne.lat;
-  const minLng = sw.lng, maxLng = ne.lng;
-
-  // ---- 1. AABB-cull suburbs first, then walk pre-sorted POIs.
-  //   Default: top-1 in-viewport POI per suburb (≤45 markers at rest).
+  // ---- 1. Walk every suburb's pre-sorted POIs — no viewport cull.
+  //   Default: top-N POIs per suburb across all 45 suburbs. Previously we
+  //   AABB-culled suburbs and POIs to the viewport, but that caused the
+  //   "markers pop in/out when I pan" bug we're fixing here. Leaflet
+  //   transforms mounted markers on pan for free, so mounting the full set
+  //   once (capped at POI_RENDER_CAP below) is cheap and makes panning
+  //   seamless — no derender, no re-fetch, no flicker.
   //   Focused: the one focused suburb blooms up to POI_FOCUSED_MAX; the
   //            rest are skipped entirely so the focused area owns the stage.
   // Grid-binning happens inline so each pixel cell keeps its top-salience
@@ -3328,13 +5447,6 @@ function renderPois() {
   const focusedCap  = POI_FOCUSED_MAX;
 
   for (const [sKey, list] of poisBySuburb) {
-    const box = suburbBox.get(sKey);
-    if (!box) continue;
-    // AABB intersection test against the viewport — cheapest possible
-    // per-suburb cull. Skips ~90% of suburbs in any normal zoom level.
-    if (box.maxLat < minLat || box.minLat > maxLat) continue;
-    if (box.maxLng < minLng || box.minLng > maxLng) continue;
-
     const isFocus = focusKey != null && sKey === focusKey;
     if (focusKey != null && !isFocus) continue;
 
@@ -3343,9 +5455,6 @@ function renderPois() {
     for (let i = 0; i < list.length && picked < cap; i++) {
       const p = list[i];
       if (!activePoiGroups.has(p.g)) continue;
-      // Per-POI viewport check — cheap inline floats, no Leaflet object.
-      if (p.la < minLat || p.la > maxLat) continue;
-      if (p.ln < minLng || p.ln > maxLng) continue;
       // Grid-bin in pixel space: highest-salience POI wins each cell.
       const pt = map.project([p.la, p.ln], zoom);
       const cKey = `${Math.floor(pt.x / cell)}:${Math.floor(pt.y / cell)}`;
@@ -3539,8 +5648,20 @@ function toggleListings() {
 
 // ---- Global ESC-to-close key handler ------------------------------------
 document.addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape' && activeListing) {
+  if (ev.key !== 'Escape') return;
+  // Confirm modal first (it's the topmost / shallowest dismissible layer).
+  const editModal = document.getElementById('editConfirmOverlay');
+  if (editModal && !editModal.classList.contains('hidden')) {
+    cancelEditConfirm();
+    return;
+  }
+  if (activeListing) {
     closeListingModal();
+    return;
+  }
+  // If we're in edit mode and an overlay is open, ESC bails out of the edit.
+  if (editMode) {
+    exitEditMode();
   }
 });
 
@@ -3604,6 +5725,12 @@ function renderTopList() {
   document.getElementById('in-budget').textContent = affordable;
   document.getElementById('strong-fit').textContent = strong;
   document.getElementById('champion').textContent = champInBudget ? champInBudget.suburb : '—';
+
+  // Warm up the cache for the top-ranked suburbs so the first clicks open
+  // the drawer with zero network wait. Top-3 is a deliberate cap — the /suburb
+  // endpoint is the slowest call we make, and prefetching more than a few
+  // in parallel would dogpile the backend for no click-through benefit.
+  prefetchTopSuburbs(3);
 }
 
 function toggleTopSuburbs() {
@@ -3631,24 +5758,125 @@ function renderAll() {
 // ========================================================================
 // Drawer
 // ========================================================================
+
+// Smoothly frame a suburb in the visible map region when the drawer opens.
+// Prefers the suburb's real polygon bounds (so big suburbs like Lane Cove
+// don't over-zoom and tiny ones like Darlinghurst aren't stranded at half-
+// zoom) and falls back to a centroid fly if the GeoJSON hasn't loaded.
+// Runs concurrently with the 0.42s grid-expand transition — Leaflet's
+// ResizeObserver keeps the view stable as the map column narrows.
+function flyToSuburb(name) {
+  if (!map) return;
+  const poly = polygonByName.get(name);
+  const flyOpts = { duration: 0.9, easeLinearity: 0.28 };
+
+  // Polygon path — uses the feature's real bounds so framing scales with
+  // suburb size. maxZoom caps how close we'll ever go even for tiny
+  // inner-city suburbs, so you always see some surrounding context.
+  if (poly && typeof poly.getBounds === 'function') {
+    try {
+      const bounds = poly.getBounds();
+      if (bounds && bounds.isValid()) {
+        map.flyToBounds(bounds, {
+          ...flyOpts,
+          padding: [50, 50],
+          maxZoom: 14.4,
+        });
+        return;
+      }
+    } catch (_) { /* fall through to centroid fly */ }
+  }
+
+  // Centroid fly fallback — happens if /polygons didn't load or the
+  // suburb click came in before polygonByName was populated.
+  const row = (suburbs || []).find(s => s.suburb === name);
+  if (row && typeof row.lat === 'number' && typeof row.lng === 'number') {
+    const target = L.latLng(row.lat, row.lng);
+    const zoom = Math.max(map.getZoom(), 14);
+    map.flyTo(target, zoom, flyOpts);
+  }
+}
+
 async function openDrawer(name) {
-  document.getElementById('drawer-content').innerHTML = `
-    <div style="padding:40px 10px;text-align:center;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.14em;">
-      <div style="display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--fg);border-radius:50%;animation:spin 0.8s linear infinite;margin-right:10px;vertical-align:middle;"></div>
-      Loading ${escapeHTML(name)}…
-    </div>`;
+  // --- 1. Content-first render (prefetch hit) ---------------------------
+  // If we've got a cached /suburb payload for this name, paint the drawer's
+  // real contents *before* we toggle the .drawer-open class. That way the
+  // 0.42s grid expand reveals a populated drawer in one motion instead of
+  // the old spinner → pop-in two-step. This is the whole point of the
+  // prefetch warmup in renderTopList().
+  const sig = userVectorSignature();
+  const hit = suburbCache.get(name);
+  const havePrefetch = hit && hit.sig === sig;
+
+  if (havePrefetch) {
+    renderDrawer(hit.payload);
+  } else {
+    document.getElementById('drawer-content').innerHTML = `
+      <div style="padding:40px 10px;text-align:center;color:var(--muted);font-family:'JetBrains Mono',monospace;font-size:11px;text-transform:uppercase;letter-spacing:0.14em;">
+        <div style="display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--fg);border-radius:50%;animation:spin 0.8s linear infinite;margin-right:10px;vertical-align:middle;"></div>
+        Loading ${escapeHTML(name)}…
+      </div>`;
+  }
+
+  // --- 2. Kick off animations (drawer grid expand + map fly) -----------
   document.getElementById('drawer').classList.add('open');
   document.getElementById('app').classList.add('drawer-open');
   // Expand this suburb's POI cloud on the map so the user can explore it
   // visually while the drawer's detail panel loads.
   setFocusedSuburb(name);
-  // Persist the polygon outline while the drawer is open — the user loses
-  // hover as soon as they move the cursor into the drawer, and a flashing
-  // outline breaks the "this is the one you're looking at" contract.
-  setSelectedPolygon(name);
+  // Smoothly frame the suburb in the (resizing) map viewport. Runs in
+  // parallel with the drawer's grid transition so both motions feel like
+  // a single coordinated response to the click.
+  flyToSuburb(name);
 
+  // Defer the polygon highlight until the map is genuinely still. The old
+  // `once('moveend', …)` was firing on the FIRST moveend the listener saw,
+  // which during a click-from-top-10 is usually one of the moveends emitted
+  // by ResizeObserver→invalidateSize as the drawer's grid column expands
+  // — *before* flyTo has even started moving. The result was the highlight
+  // popping in mid-flight at the wrong projection.
+  //
+  // Stillness debounce: every move/moveend resets a 180ms timer; we only
+  // call setSelectedPolygon when no map motion has happened for that long.
+  // That covers the drawer-resize moveends, the ~50 move events of the
+  // 0.9s flyTo, and the final fly moveend in one rule, without any of
+  // them tripping the highlight early.
+  (function scheduleHighlight(target) {
+    if (!map) { setSelectedPolygon(target); return; }
+    let done = false;
+    let settleTimer = null;
+    const STILLNESS_MS = 180;
+    const HARD_TIMEOUT_MS = 2500;
+
+    const finish = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(settleTimer);
+      clearTimeout(hardTimer);
+      map.off('move', onMotion);
+      map.off('moveend', onMotion);
+      setSelectedPolygon(target);
+    };
+    const onMotion = () => {
+      if (done) return;
+      clearTimeout(settleTimer);
+      settleTimer = setTimeout(finish, STILLNESS_MS);
+    };
+
+    map.on('move', onMotion);
+    map.on('moveend', onMotion);
+    // Prime the timer — if no motion happens (eg flyToSuburb bailed because
+    // the suburb has no polygon + no centroid), the stillness window starts
+    // immediately and we apply after STILLNESS_MS.
+    settleTimer = setTimeout(finish, STILLNESS_MS);
+    // Hard ceiling — never wait longer than this, no matter what.
+    const hardTimer = setTimeout(finish, HARD_TIMEOUT_MS);
+  })(name);
+
+  // --- 3. Fetch if we didn't already have it ----------------------------
+  if (havePrefetch) return;
   try {
-    const s = await fetchSuburb(name);
+    const s = await fetchSuburbCached(name);
     renderDrawer(s);
   } catch (err) {
     document.getElementById('drawer-content').innerHTML = `
@@ -3664,6 +5892,11 @@ function renderDrawer(s) {
   // Pull the matching row from /match to get the personal match_score
   const matchRow = suburbs.find(x => x.suburb === s.suburb);
   const matchScore = matchRow ? Math.round(matchRow.match_score) : null;
+
+  // Commute chip — only shown when we have data for this suburb in at
+  // least one mode. The commute-chip DOM is stable (same ids) so later
+  // mode toggles can live-update it without re-rendering the whole drawer.
+  const commuteChipHTML = buildCommuteChipHTML(s.suburb);
 
   const dimBars = DIMENSIONS.map(d => {
     const v = s.dimensions[d];
@@ -3688,6 +5921,12 @@ function renderDrawer(s) {
   const negItems = s.negative && s.negative.length
     ? s.negative.map(n => `<li class="neg"><span class="mark">−</span><span>${escapeHTML(n)}</span></li>`).join('')
     : '<div class="empty">No meaningful mismatches.</div>';
+
+  // ---- "Why this fits you" (dataset-grounded, pre-LLM) ---------------
+  // Ranks dims by user×suburb alignment and cites real POI counts. Sits
+  // above the AI block so even if the LLM call fails the user still gets
+  // a concrete, verifiable answer to "why this suburb?"
+  const whyFitHTML = renderWhyFitBlock(s, matchRow, userVector);
 
   // ---- AI block (LLM-written headline + summary + bullets) -----------
   const aiBlock = renderAIBlock(s.ai);
@@ -3722,7 +5961,11 @@ function renderDrawer(s) {
       </div>
     </div>
 
+    ${whyFitHTML}
+
     ${aiBlock}
+
+    ${commuteChipHTML}
 
     ${chipsHTML ? `
     <div class="d-section">
@@ -3755,6 +5998,114 @@ function renderDrawer(s) {
       <div class="listings-list">${listingsHTML}</div>
     </div>
   `;
+}
+
+// Commute chip for the drawer — renders once at drawer open time and
+// stays in the DOM. Mode toggle hooks re-populate the minute values in
+// place so changing Driving ↔ Transit doesn't reset the drawer scroll.
+function buildCommuteChipHTML(suburbName) {
+  const haveWork = commuteOriginAvailable();
+  const haveData = commuteData && commuteFetchState === 'ok';
+  if (!haveWork && commuteFetchState !== 'loading') return '';
+
+  const dr = haveData && commuteData.driving[suburbName] ? commuteData.driving[suburbName] : null;
+  const tr = haveData && commuteData.transit[suburbName] ? commuteData.transit[suburbName] : null;
+  const drivingMin  = dr ? dr.minutes : null;
+  const transitMin  = tr ? tr.minutes : null;
+  const drivingDist = dr ? dr.distance_m : null;
+  const transitDist = tr ? tr.distance_m : null;
+  const addr = commuteAddressLabel();
+
+  const fmt = (m) => m == null || !Number.isFinite(m) ? '—' : `${Math.round(m)} min`;
+  const fmtKm = (m) => m == null || !Number.isFinite(m) ? '' : `${(m / 1000).toFixed(1)} km`;
+  const colorForMin = (m) => {
+    // Match the legend gradient: short = green, mid = grey, long = red.
+    if (m == null) return 'var(--muted)';
+    if (m <= 20) return '#15803d';
+    if (m <= 35) return '#6ed782';
+    if (m <= 50) return '#8a8f98';
+    if (m <= 70) return '#eb6464';
+    return '#b91c1c';
+  };
+
+  // Google Maps directions link — uses the user's work coords as origin and
+  // the suburb's centroid as destination. Mode follows the currently-active
+  // sidebar commute mode so the "Directions" CTA mirrors what's highlighted.
+  const suburbRef = (typeof suburbs !== 'undefined' && Array.isArray(suburbs))
+    ? suburbs.find(x => x.suburb === suburbName) : null;
+  const destLat = suburbRef ? suburbRef.lat : null;
+  const destLng = suburbRef ? suburbRef.lng : null;
+  const mapsHref = (destLat != null && destLng != null && haveWork)
+    ? `https://www.google.com/maps/dir/?api=1&origin=${userDetails.workLat},${userDetails.workLng}&destination=${destLat},${destLng}&travelmode=${commuteMode === 'transit' ? 'transit' : 'driving'}`
+    : null;
+
+  const directionsHTML = mapsHref ? `
+    <div class="d-commute-actions">
+      <a class="d-commute-directions" href="${escapeAttr(mapsHref)}" target="_blank" rel="noopener">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M8 1.5 L14.5 8 L8 14.5 L1.5 8 Z"/>
+          <path d="M5 8 h4 v-2 L11 8 L9 10 v-2 H5 Z"/>
+        </svg>
+        <span>Directions</span>
+      </a>
+    </div>
+  ` : '';
+
+  return `
+    <div class="d-commute" id="drawerCommuteChip" data-suburb="${escapeAttr(suburbName)}">
+      <div class="d-commute-head">
+        <span class="d-commute-label">Commute to work</span>
+        <span class="d-commute-addr">${escapeHTML(addr)}</span>
+      </div>
+      <div class="d-commute-grid">
+        <div class="d-commute-cell">
+          <div class="d-commute-mode-lab">Driving</div>
+          <div class="d-commute-min" id="drawerCommuteDriving" style="color:${colorForMin(drivingMin)};">${commuteFetchState === 'loading' ? '…' : fmt(drivingMin)}</div>
+          <div class="d-commute-dist" id="drawerCommuteDrivingDist">${fmtKm(drivingDist)}</div>
+        </div>
+        <div class="d-commute-cell">
+          <div class="d-commute-mode-lab">Transit</div>
+          <div class="d-commute-min" id="drawerCommuteTransit" style="color:${colorForMin(transitMin)};">${commuteFetchState === 'loading' ? '…' : fmt(transitMin)}</div>
+          <div class="d-commute-dist" id="drawerCommuteTransitDist">${fmtKm(transitDist)}</div>
+        </div>
+      </div>
+      ${directionsHTML}
+    </div>
+  `;
+}
+
+// Called when the user flips the sidebar commute mode toggle while a
+// drawer is open. The chip shows both modes at once, so we just repaint
+// the two cells; the active sidebar mode is cosmetic here.
+function refreshDrawerCommuteChip() {
+  const chip = document.getElementById('drawerCommuteChip');
+  if (!chip) return;
+  const name = chip.getAttribute('data-suburb');
+  if (!name) return;
+  const dr = commuteData && commuteData.driving[name] ? commuteData.driving[name] : null;
+  const tr = commuteData && commuteData.transit[name] ? commuteData.transit[name] : null;
+  const dEl  = document.getElementById('drawerCommuteDriving');
+  const tEl  = document.getElementById('drawerCommuteTransit');
+  const ddEl = document.getElementById('drawerCommuteDrivingDist');
+  const tdEl = document.getElementById('drawerCommuteTransitDist');
+  const fmt   = (m) => m == null || !Number.isFinite(m) ? '—' : `${Math.round(m)} min`;
+  const fmtKm = (m) => m == null || !Number.isFinite(m) ? '' : `${(m / 1000).toFixed(1)} km`;
+  if (dEl)  dEl.textContent  = fmt(dr ? dr.minutes : null);
+  if (tEl)  tEl.textContent  = fmt(tr ? tr.minutes : null);
+  if (ddEl) ddEl.textContent = fmtKm(dr ? dr.distance_m : null);
+  if (tdEl) tdEl.textContent = fmtKm(tr ? tr.distance_m : null);
+  // Update the Directions link so it reflects the current mode selection.
+  const dirEl = chip.querySelector('.d-commute-directions');
+  if (dirEl && commuteOriginAvailable()) {
+    const suburbRef = (typeof suburbs !== 'undefined' && Array.isArray(suburbs))
+      ? suburbs.find(x => x.suburb === name) : null;
+    if (suburbRef) {
+      dirEl.href = `https://www.google.com/maps/dir/?api=1`
+        + `&origin=${userDetails.workLat},${userDetails.workLng}`
+        + `&destination=${suburbRef.lat},${suburbRef.lng}`
+        + `&travelmode=${commuteMode === 'transit' ? 'transit' : 'driving'}`;
+    }
+  }
 }
 
 function renderAIBlock(ai) {
@@ -3804,6 +6155,161 @@ const BREAKDOWN_LABELS_FE = {
   civic: 'civic buildings', medical: 'medical clinics',
 };
 
+// Each of the six dimensions maps to a canonical set of breakdown keys from
+// evidence.breakdowns. Order matters — earlier keys are surfaced first when
+// counts tie. Keep this in sync with categories.py and BREAKDOWN_LABELS_FE.
+const DIM_TO_BREAKDOWNS = {
+  social_energy: ['bars', 'pubs', 'nightclubs', 'live_music', 'breweries', 'karaoke'],
+  aesthetic:     ['galleries', 'museums', 'vintage', 'indie_retail', 'cinemas', 'bookstores', 'tattoo_piercing'],
+  pace:          ['cafes', 'bakeries', 'restaurants', 'bars', 'pubs'],
+  outdoor:       ['beaches', 'parks', 'trails', 'waterfront', 'sports_grounds', 'pools', 'lookouts', 'playgrounds'],
+  culinary:      ['restaurants', 'cafes', 'bakeries', 'specialty_food', 'markets', 'desserts'],
+  community:     ['libraries', 'schools', 'worship', 'community_centers', 'civic', 'medical'],
+};
+
+// Pull the top-N non-zero breakdowns for a given dimension from the
+// evidence blob. Returns [{k, v, label}] sorted by count descending.
+function topEvidenceFor(dim, evidence, n = 3) {
+  if (!evidence || !evidence.breakdowns) return [];
+  // Backend ships breakdowns keyed by dimension already (e.g. breakdowns.outdoor).
+  const dimBlob = evidence.breakdowns[dim] || {};
+  const preferred = DIM_TO_BREAKDOWNS[dim] || [];
+  const items = [];
+  const seen = new Set();
+  // Preferred order first (so when counts tie, we show the canonical signal).
+  for (const k of preferred) {
+    const v = dimBlob[k];
+    if (typeof v === 'number' && v > 0) {
+      items.push({ k, v, label: BREAKDOWN_LABELS_FE[k] || k.replace(/_/g, ' ') });
+      seen.add(k);
+    }
+  }
+  // Catch anything else the backend sent (future-proof).
+  for (const [k, v] of Object.entries(dimBlob)) {
+    if (seen.has(k)) continue;
+    if (typeof v === 'number' && v > 0) {
+      items.push({ k, v, label: BREAKDOWN_LABELS_FE[k] || k.replace(/_/g, ' ') });
+    }
+  }
+  items.sort((a, b) => b.v - a.v);
+  const top = items.slice(0, n);
+  // Culinary earns a cuisine chip on top — it's the most tangible proof.
+  if (dim === 'culinary' && Array.isArray(evidence.top_cuisines)) {
+    const cuisine = evidence.top_cuisines.find(c => c && c.count > 0);
+    if (cuisine) {
+      top.unshift({
+        k: cuisine.cuisine,
+        v: cuisine.count,
+        label: `${cuisine.cuisine.toLowerCase()} venues`,
+      });
+      if (top.length > n + 1) top.length = n + 1;
+    }
+  }
+  return top;
+}
+
+// Renders the "Why this fits you" block — a tight, data-grounded answer
+// to "why this suburb?" Ranks dimensions by alignment strength (how much
+// the user wants it × how much the suburb has it), then for each top
+// dim shows user-pref vs suburb-score plus the real POI counts driving
+// the suburb score.
+function renderWhyFitBlock(s, matchRow, userVec) {
+  if (!userVec || !s || !s.dimensions) return '';
+
+  // Alignment score: emphasises dims the user actively wants AND the
+  // suburb actually delivers on. Neutral-user (50) contributes nothing,
+  // so we don't pretend the user cares about a dim they didn't answer
+  // strongly on.
+  const ranked = DIMENSIONS.map(d => {
+    const u = Number(userVec[d] || 50);
+    const sv = Number(s.dimensions[d] || 0);
+    const userWeight = Math.max(0, (u - 50) / 50); // 0..1
+    const suburbWeight = Math.max(0, sv / 100);    // 0..1
+    const alignment = userWeight * suburbWeight;
+    return { dim: d, user: u, suburb: sv, alignment };
+  })
+  // Only surface dims the user cares about (user > 55) AND the suburb
+  // is at least middling on (suburb >= 50). Otherwise it's not really
+  // a "why this fits" — it's just a neutral data point.
+  .filter(r => r.user > 55 && r.suburb >= 50)
+  .sort((a, b) => b.alignment - a.alignment);
+
+  if (!ranked.length) {
+    // Fallback: surface the suburb's single strongest dim (>= 65) even if
+    // the user didn't specifically ask — strong signals are honest evidence
+    // of character. If nothing clears 65, we genuinely have nothing to say.
+    const strong = DIMENSIONS
+      .map(d => ({ dim: d, user: Number(userVec[d] || 50), suburb: Number(s.dimensions[d] || 0) }))
+      .filter(r => r.suburb >= 65)
+      .sort((a, b) => b.suburb - a.suburb)
+      .slice(0, 1);
+    if (!strong.length) {
+      return `
+        <div class="why-fit">
+          <div class="why-fit-kicker"><span class="dot"></span>Why this fits you</div>
+          <div class="why-fit-empty">
+            No strong personality match on the dimensions you weighted heavily.
+            ${matchRow ? `Overall score of ${Math.round(matchRow.match_score)}/100 reflects how close ${escapeHTML(s.suburb)} sits to your taste vector despite that.` : ''}
+          </div>
+        </div>`;
+    }
+    const it = strong[0];
+    const evid = topEvidenceFor(it.dim, s.evidence, 3);
+    const chips = evid.length
+      ? `<div class="why-evidence">${evid.map(e =>
+          `<span class="why-evidence-chip"><strong>${e.v}</strong>${escapeHTML(e.label)}</span>`
+        ).join('')}</div>`
+      : '<div class="why-evidence-empty">No sub-category breakdowns available.</div>';
+    return `
+      <div class="why-fit">
+        <div class="why-fit-kicker"><span class="dot"></span>Why this fits you</div>
+        <div class="why-list">
+          <div class="why-item">
+            <div class="why-head">
+              <span class="why-dim">Strong ${escapeHTML(DIMENSION_LABELS[it.dim] || it.dim)} character</span>
+              <span class="why-nums">
+                <span class="why-num-pill"><span class="nlbl">you</span><span class="nval">${Math.round(it.user)}</span></span>
+                <span class="why-arrow">→</span>
+                <span class="why-num-pill suburb"><span class="nlbl">here</span><span class="nval">${Math.round(it.suburb)}</span></span>
+              </span>
+            </div>
+            ${chips}
+          </div>
+        </div>
+      </div>`;
+  }
+
+  const top = ranked.slice(0, 3);
+  const items = top.map(r => {
+    const evid = topEvidenceFor(r.dim, s.evidence, 3);
+    const chips = evid.length
+      ? `<div class="why-evidence">${evid.map(e =>
+          `<span class="why-evidence-chip"><strong>${e.v}</strong>${escapeHTML(e.label)}</span>`
+        ).join('')}</div>`
+      : '<div class="why-evidence-empty">No sub-category counts for this dimension here.</div>';
+    return `
+      <div class="why-item">
+        <div class="why-head">
+          <span class="why-dim">${escapeHTML(DIMENSION_LABELS[r.dim] || r.dim)}</span>
+          <span class="why-nums">
+            <span class="why-num-pill"><span class="nlbl">you</span><span class="nval">${Math.round(r.user)}</span></span>
+            <span class="why-arrow">→</span>
+            <span class="why-num-pill suburb"><span class="nlbl">here</span><span class="nval">${Math.round(r.suburb)}</span></span>
+          </span>
+        </div>
+        ${chips}
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="why-fit">
+      <div class="why-fit-kicker"><span class="dot"></span>Why this fits you</div>
+      <div class="why-list">${items}</div>
+    </div>
+  `;
+}
+
 function renderEvidenceChips(evidence) {
   if (!evidence || !evidence.breakdowns) return '';
   const flat = [];
@@ -3842,8 +6348,23 @@ function dimFillColour(v) {
 function closeDrawer() {
   document.getElementById('drawer').classList.remove('open');
   document.getElementById('app').classList.remove('drawer-open');
+  // Don't clear the wide state — keep user preference sticky across opens.
   setFocusedSuburb(null);   // collapse the map back to headline-per-suburb
   setSelectedPolygon(null); // release the persistent polygon highlight
+}
+
+// Toggle the drawer between its compact (440px) and wide (~760px) states.
+// The grid-template-columns transition on `.app` handles the smooth
+// animation; we just flip the class. Map auto-resizes via the existing
+// resize observer / Leaflet's invalidateSize hook below.
+function toggleDrawerWidth() {
+  const app = document.getElementById('app');
+  app.classList.toggle('drawer-wide');
+  // Leaflet needs to re-measure once the grid finishes animating, otherwise
+  // the map view stays sized to the old column width and pans/zooms feel off.
+  if (typeof map !== 'undefined' && map && typeof map.invalidateSize === 'function') {
+    setTimeout(() => map.invalidateSize({ animate: false }), 460);
+  }
 }
 
 // ========================================================================
@@ -3884,6 +6405,11 @@ function applyBudget(newBudget, opts) {
     try {
       if (!matchResponse) return;  // pre-quiz — nothing to refetch yet
       await fetchMatch(userBudget);
+      // Fresh match_scores — re-snapshot the baseline, then re-apply the
+      // current commute penalty so the heatmap stays consistent with the
+      // sidebar commute-weight slider across budget changes.
+      for (const s of suburbs) { s._baseMatchScore = s.match_score; }
+      applyCommutePenalty();
       renderAll();
     } catch (err) {
       console.error('Match refetch failed:', err);
@@ -3932,8 +6458,237 @@ function escapeHTML(str) {
 function escapeAttr(str) { return escapeHTML(str); }
 
 // ========================================================================
+// Landing / portal splash
+// ========================================================================
+// Cycles the placeholder text inside the search-bar CTA so the landing
+// screen feels alive without a full intro animation. Each phrase hints
+// at one of the six taste dimensions Orbit actually scores against.
+const LANDING_PHRASES = [
+  'who you are',
+  'a Friday-night pace',
+  'a quiet morning coffee',
+  'a beach you can walk to',
+  'an indie food street',
+  'a creative high-street',
+  'a community to put down roots',
+  'your weekly $ budget',
+];
+let landingRotIdx = 0;
+let landingRotTimer = null;
+function startLandingRotator() {
+  const el = document.getElementById('landingRotator');
+  if (!el) return;
+  landingRotTimer = setInterval(() => {
+    landingRotIdx = (landingRotIdx + 1) % LANDING_PHRASES.length;
+    el.style.opacity = '0';
+    el.style.transition = 'opacity 0.35s ease';
+    setTimeout(() => {
+      el.textContent = LANDING_PHRASES[landingRotIdx];
+      el.style.opacity = '1';
+    }, 360);
+  }, 2400);
+}
+
+function enterApp() {
+  const landing = document.getElementById('landingOverlay');
+  if (!landing || landing.classList.contains('hidden')) return;
+  if (landingRotTimer) { clearInterval(landingRotTimer); landingRotTimer = null; }
+  landing.classList.add('hidden');
+  // Remove from layout entirely after the fade so it can't intercept clicks.
+  setTimeout(() => { landing.style.display = 'none'; }, 750);
+  // Flow now: landing → details → quiz → map. Details is a separate overlay
+  // so we can collect name / work address / budget / dwelling up front.
+  showDetails();
+}
+
+// Keyboard shortcut: Enter or Space starts the journey. Ignored once the
+// quiz has begun so it doesn't fight the quiz's own controls.
+window.addEventListener('keydown', (ev) => {
+  const landing = document.getElementById('landingOverlay');
+  if (!landing || landing.classList.contains('hidden')) return;
+  if (ev.key === 'Enter' || ev.key === ' ' || ev.key === 'Spacebar') {
+    ev.preventDefault();
+    enterApp();
+  }
+});
+
+// ========================================================================
+// Details screen (between landing and quiz)
+// ========================================================================
+// Google Places Autocomplete is loaded via an async <script> tag injected
+// below. We keep the key inline because this is a hackathon demo shipped as
+// a static file; rotate it via restrictions in Google Cloud Console.
+const GOOGLE_PLACES_KEY = 'AIzaSyCdLCMVmitumw_ZqQ7WmA1nArwa9ZZdG-0';
+let googleScriptLoaded = false;
+let detailsAutocomplete = null;
+
+function showDetails() {
+  const det = document.getElementById('detailsOverlay');
+  if (!det) return;
+  // Rehydrate fields from state so going back from the quiz preserves typed values.
+  const nameEl = document.getElementById('detName');
+  if (nameEl) nameEl.value = userDetails.name || '';
+  const workEl = document.getElementById('detWork');
+  if (workEl) workEl.value = userDetails.workAddress || '';
+  const bdEl = document.getElementById('detBedrooms');
+  if (bdEl) bdEl.value = userDetails.bedrooms || '';
+  const utEl = document.getElementById('detUnit');
+  if (utEl) utEl.value = userDetails.unitType || '';
+  const bgEl = document.getElementById('detBudget');
+  if (bgEl) bgEl.value = userBudget;
+  const brEl = document.getElementById('detBudgetRange');
+  if (brEl) brEl.value = Math.max(300, Math.min(2000, userBudget));
+  const valEl = document.getElementById('detBudgetVal');
+  if (valEl) valEl.textContent = '$' + userBudget;
+
+  det.style.display = 'flex';
+  // Force a reflow so the fade-in actually transitions.
+  det.offsetHeight;
+  det.classList.remove('hidden');
+  // Also hide the quiz in case we came from Back-on-step-0.
+  const quiz = document.getElementById('quizOverlay');
+  if (quiz) {
+    quiz.classList.add('hidden');
+    setTimeout(() => { if (quiz.classList.contains('hidden')) quiz.style.display = 'none'; }, 650);
+  }
+  ensureGoogleScript();
+  refreshDetailsCta();
+  if (nameEl) nameEl.focus();
+}
+
+function hideDetails() {
+  const det = document.getElementById('detailsOverlay');
+  if (!det) return;
+  det.classList.add('hidden');
+  setTimeout(() => { det.style.display = 'none'; }, 650);
+}
+
+function backToLanding() {
+  // Offer a path back to the splash if the user wants a clean restart. Details
+  // survive in state — we re-use them when they come back.
+  hideDetails();
+  const landing = document.getElementById('landingOverlay');
+  if (!landing) return;
+  landing.style.display = 'flex';
+  landing.offsetHeight;
+  landing.classList.remove('hidden');
+  if (!landingRotTimer) startLandingRotator();
+}
+
+function onDetailName(v)     { userDetails.name = v.trim(); }
+function onDetailBedrooms(v) { userDetails.bedrooms = v; }
+function onDetailUnit(v)     { userDetails.unitType = v; }
+function onDetailWorkTyped(v) {
+  // Capture raw text in case the user doesn't pick a Places suggestion — we
+  // still want to keep what they typed. Lat/lng reset because they're only
+  // trustworthy when paired with a selected suggestion.
+  userDetails.workAddress = v.trim();
+  userDetails.workLat = null;
+  userDetails.workLng = null;
+}
+function onDetailBudgetTyped(v) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n)) return;
+  userBudget = Math.max(100, Math.min(5000, n));
+  const r = document.getElementById('detBudgetRange');
+  if (r) r.value = Math.max(300, Math.min(2000, userBudget));
+  const val = document.getElementById('detBudgetVal');
+  if (val) val.textContent = '$' + userBudget;
+}
+function onDetailBudgetSlider(v) {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n)) return;
+  userBudget = n;
+  const b = document.getElementById('detBudget');
+  if (b) b.value = userBudget;
+  const val = document.getElementById('detBudgetVal');
+  if (val) val.textContent = '$' + userBudget;
+}
+
+// All details are optional now; we just keep this as a hook in case we want
+// to re-enable validation later (e.g., warn if budget is absurd).
+function refreshDetailsCta() {
+  const cta = document.getElementById('detailsCta');
+  if (cta) cta.disabled = false;
+}
+
+function continueFromDetails() {
+  if (document.getElementById('detailsCta')?.disabled) return;
+  hideDetails();
+  const quiz = document.getElementById('quizOverlay');
+  if (quiz) {
+    quiz.style.display = 'flex';
+    quiz.offsetHeight;
+    quiz.classList.remove('hidden');
+  }
+  // Slider quiz is synchronous — no /quiz fetch to wait on. Just render
+  // the current step (defaults to step 0 on first entry; preserves progress
+  // if the user came back via quizBack()).
+  renderQuizStep();
+}
+
+function ensureGoogleScript() {
+  if (googleScriptLoaded) { initDetailsAutocomplete(); return; }
+  if (!GOOGLE_PLACES_KEY || GOOGLE_PLACES_KEY === 'REPLACE_ME') {
+    const hint = document.getElementById('detWorkHint');
+    if (hint) hint.textContent = 'Places Autocomplete is off — paste a Google API key into index.html to enable suggestions.';
+    return;
+  }
+  window.__orbitInitPlaces = function () {
+    googleScriptLoaded = true;
+    initDetailsAutocomplete();
+  };
+  const s = document.createElement('script');
+  s.async = true;
+  s.defer = true;
+  s.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(GOOGLE_PLACES_KEY)}&libraries=places&loading=async&callback=__orbitInitPlaces`;
+  s.onerror = () => {
+    const hint = document.getElementById('detWorkHint');
+    if (hint) hint.textContent = 'Couldn\'t reach Google Places. Work address still accepted as plain text.';
+  };
+  document.head.appendChild(s);
+}
+
+function initDetailsAutocomplete() {
+  const el = document.getElementById('detWork');
+  if (!el || detailsAutocomplete) return;
+  if (!window.google || !window.google.maps || !window.google.maps.places) return;
+  // Sydney bias box — roughly CBD ± metro area. Places will bias but not
+  // restrict results, so users can still pick a work address further out.
+  const sydneyBounds = new google.maps.LatLngBounds(
+    new google.maps.LatLng(-34.10, 150.60),  // SW
+    new google.maps.LatLng(-33.55, 151.35)   // NE
+  );
+  detailsAutocomplete = new google.maps.places.Autocomplete(el, {
+    bounds: sydneyBounds,
+    componentRestrictions: { country: 'au' },
+    fields: ['formatted_address', 'geometry', 'name'],
+    types: ['establishment', 'geocode'],
+  });
+  detailsAutocomplete.addListener('place_changed', () => {
+    const place = detailsAutocomplete.getPlace();
+    if (!place) return;
+    const formatted = place.formatted_address
+      || (place.name ? place.name : el.value);
+    userDetails.workAddress = formatted;
+    if (place.geometry && place.geometry.location) {
+      userDetails.workLat = place.geometry.location.lat();
+      userDetails.workLng = place.geometry.location.lng();
+    } else {
+      userDetails.workLat = null;
+      userDetails.workLng = null;
+    }
+    el.value = formatted;
+    refreshDetailsCta();
+  });
+}
+
+// ========================================================================
 // Boot
 // ========================================================================
+// Quiz boots in the background so it's already loaded by the time the
+// user dismisses the landing splash. Landing rotator starts immediately.
+startLandingRotator();
 bootQuiz();
 </script>
 

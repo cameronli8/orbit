@@ -67,11 +67,27 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 # Request / response models
 # ---------------------------------------------------------------------------
+class DimensionScores(BaseModel):
+    social_energy: float
+    aesthetic:     float
+    pace:          float
+    outdoor:       float
+    culinary:      float
+    community:     float
+
+
 class MatchRequest(BaseModel):
-    answers: Dict[str, str] = Field(
-        ...,
-        description="Mapping of question_id -> chosen answer_id.",
+    answers: Optional[Dict[str, str]] = Field(
+        None,
+        description="Mapping of question_id -> chosen answer_id. Either this "
+                    "or user_vector must be provided.",
         example={"weekend_morning": "market_crawl", "nights_out": "few_times"},
+    )
+    user_vector: Optional[DimensionScores] = Field(
+        None,
+        description="Direct six-dim taste vector (0-100 per dim). If present, "
+                    "scoring uses this and bypasses score_user(). Enables the "
+                    "slider-based quiz path without touching scoring logic.",
     )
     budget: float = Field(
         800.0,
@@ -83,15 +99,6 @@ class MatchRequest(BaseModel):
         description="Max number of suburbs to return.",
         ge=1, le=200,
     )
-
-
-class DimensionScores(BaseModel):
-    social_energy: float
-    aesthetic:     float
-    pace:          float
-    outdoor:       float
-    culinary:      float
-    community:     float
 
 
 class SuburbMatch(BaseModel):
@@ -112,9 +119,14 @@ class MatchResponse(BaseModel):
 
 
 class ProfileRequest(BaseModel):
-    answers: Dict[str, str] = Field(
-        ...,
-        description="Mapping of question_id -> chosen answer_id.",
+    answers: Optional[Dict[str, str]] = Field(
+        None,
+        description="Mapping of question_id -> chosen answer_id. Optional when "
+                    "user_vector is supplied (slider-mode).",
+    )
+    user_vector: Optional[DimensionScores] = Field(
+        None,
+        description="Direct six-dim taste vector; skips score_user when set.",
     )
 
 
@@ -159,12 +171,25 @@ def get_quiz():
 
 @app.post("/match", response_model=MatchResponse)
 def post_match(req: MatchRequest):
-    """Score every suburb against the user's quiz answers and budget,
-    return the ranked list with explanations."""
-    if not req.answers:
-        raise HTTPException(status_code=400, detail="No quiz answers submitted.")
+    """Score every suburb against the user's taste vector and budget, return
+    the ranked list with explanations.
 
-    user_vec = score_user(req.answers)
+    Two entry points share this endpoint:
+      • Answers path (legacy 7-question quiz): answers → score_user → vector.
+      • Vector path (slider quiz):             user_vector used directly.
+    Scoring logic (score_suburbs) is identical in both cases; only the
+    vector origin differs.
+    """
+    if req.user_vector is not None:
+        user_vec = req.user_vector.model_dump()
+    elif req.answers:
+        user_vec = score_user(req.answers)
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either `answers` or `user_vector`.",
+        )
+
     ranked = score_suburbs(user_vec, budget=req.budget).head(req.limit)
 
     suburbs: List[SuburbMatch] = []
@@ -199,11 +224,25 @@ def post_match(req: MatchRequest):
 
 @app.post("/profile", response_model=ProfileResponse)
 def post_profile(req: ProfileRequest):
-    """Score the quiz and return an LLM-written personality profile."""
-    if not req.answers:
-        raise HTTPException(status_code=400, detail="No quiz answers submitted.")
-    user_vec = score_user(req.answers)
-    prof = profile_user(user_vec, req.answers)
+    """Score the quiz and return an LLM-written personality profile.
+
+    Accepts either the legacy answers payload or a direct user_vector (from the
+    slider quiz). When only user_vector is supplied, the LLM sees an empty
+    answers block — the vector itself is still rich enough to drive the
+    profile copy.
+    """
+    if req.user_vector is not None:
+        user_vec = req.user_vector.model_dump()
+        answers = req.answers or {}
+    elif req.answers:
+        user_vec = score_user(req.answers)
+        answers = req.answers
+    else:
+        raise HTTPException(
+            status_code=400,
+            detail="Provide either `answers` or `user_vector`.",
+        )
+    prof = profile_user(user_vec, answers)
     return ProfileResponse(
         headline=prof.get("headline", "Your Orbit profile"),
         summary=prof.get("summary", ""),

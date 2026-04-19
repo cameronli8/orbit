@@ -582,6 +582,101 @@ def _fmt_duration(seconds: Optional[float]) -> str:
     return f"{s}s"
 
 
+def _render_activity_chart(series: List[Dict]) -> str:
+    """Build an inline SVG dual-lane bar chart for the admin's activity panel.
+
+    Top lane (grey):  requests per minute.
+    Bottom lane (green): unique users per minute.
+
+    Each lane is scaled to its own max so the users lane stays legible even
+    when it's dwarfed by raw request count (a single user can make 20 req
+    in a minute). Shared x-axis labels: window-start, midpoint, now.
+
+    Returns a self-contained HTML snippet — inline SVG, no JS, no external
+    libs. One render pass, identical behaviour on every device.
+    """
+    if not series:
+        return (
+            "<div class='muted' style='padding: 32px 0; text-align: center; "
+            "font-size: 13px'>no activity in the last 60 minutes — come back "
+            "after someone uses the app</div>"
+        )
+
+    n = len(series)
+    req_max = max(1, max(p["req"] for p in series))
+    usr_max = max(1, max(p["users"] for p in series))
+
+    # viewBox units — the SVG scales with its container via width=100%.
+    W, H_LANE, GAP, LABEL_H = 900.0, 70.0, 8.0, 24.0
+    total_h = H_LANE * 2 + GAP + LABEL_H
+    bar_slot = W / n
+    bar_w = max(1.0, bar_slot - 1.0)
+
+    def _bars(key: str, y_top: float, max_val: int, fill: str) -> str:
+        chunks: List[str] = []
+        for i, p in enumerate(series):
+            v = p[key]
+            if v <= 0:
+                continue
+            h = (v / max_val) * (H_LANE - 2)
+            if h < 1.5:  # ensure a visible sliver for any nonzero bucket
+                h = 1.5
+            x = i * bar_slot + 0.5
+            y = y_top + (H_LANE - h)
+            t_label = time.strftime("%H:%M", time.localtime(p["t"]))
+            chunks.append(
+                f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_w:.2f}" '
+                f'height="{h:.2f}" fill="{fill}" rx="1">'
+                f'<title>{t_label} — {p["req"]} req, {p["users"]} users</title>'
+                f'</rect>'
+            )
+        return "".join(chunks)
+
+    req_bars = _bars("req", 0.0, req_max, "#6e7681")
+    usr_bars = _bars("users", H_LANE + GAP, usr_max, "#4ade80")
+
+    # Time-axis labels — first bucket, middle, last bucket.
+    t_start = time.strftime("%H:%M", time.localtime(series[0]["t"]))
+    t_mid = time.strftime("%H:%M", time.localtime(series[n // 2]["t"]))
+    t_end = time.strftime("%H:%M", time.localtime(series[-1]["t"]))
+
+    label_y = H_LANE * 2 + GAP + 16.0
+    lane2_top = H_LANE + GAP
+    axis_y1 = H_LANE
+    axis_y2 = H_LANE * 2 + GAP
+
+    mono = "ui-monospace,Menlo,Consolas,monospace"
+
+    return (
+        f'<svg viewBox="0 0 {W:.0f} {total_h:.0f}" width="100%" '
+        f'preserveAspectRatio="none" '
+        f'style="display:block;max-height:220px" role="img" '
+        f'aria-label="Activity over the last 60 minutes">'
+        # lane 1 label + bars
+        f'<text x="6" y="12" fill="#6e7681" font-size="10" '
+        f'font-family="{mono}">req/min (peak {req_max})</text>'
+        f'{req_bars}'
+        # separator line between lanes
+        f'<line x1="0" y1="{axis_y1:.2f}" x2="{W:.0f}" y2="{axis_y1:.2f}" '
+        f'stroke="#1f242c" stroke-width="0.5" />'
+        # lane 2 label + bars
+        f'<text x="6" y="{lane2_top + 12:.2f}" fill="#6e7681" font-size="10" '
+        f'font-family="{mono}">unique users/min (peak {usr_max})</text>'
+        f'{usr_bars}'
+        # x-axis baseline
+        f'<line x1="0" y1="{axis_y2:.2f}" x2="{W:.0f}" y2="{axis_y2:.2f}" '
+        f'stroke="#1f242c" stroke-width="0.5" />'
+        # time axis labels
+        f'<text x="6" y="{label_y:.2f}" fill="#6e7681" font-size="10" '
+        f'font-family="{mono}">{t_start}</text>'
+        f'<text x="{W/2:.0f}" y="{label_y:.2f}" fill="#6e7681" font-size="10" '
+        f'font-family="{mono}" text-anchor="middle">{t_mid}</text>'
+        f'<text x="{W - 6:.0f}" y="{label_y:.2f}" fill="#6e7681" font-size="10" '
+        f'font-family="{mono}" text-anchor="end">{t_end}</text>'
+        f'</svg>'
+    )
+
+
 def _render_admin(stats: Dict, token: str = "") -> str:
     """Server-render the admin dashboard as a single HTML doc. Manual refresh
     only (see the /match cache comment: we want the admin view to reflect
@@ -650,6 +745,8 @@ def _render_admin(stats: Dict, token: str = "") -> str:
         f"<div class='banner err'>metrics init error: {_html_escape(init_err)}</div>"
         if init_err else ""
     )
+
+    activity_chart_svg = _render_activity_chart(stats.get("timeseries") or [])
 
     return f"""<!doctype html>
 <html lang="en">
@@ -779,6 +876,11 @@ def _render_admin(stats: Dict, token: str = "") -> str:
           <div class="sub">in-memory dataframe</div>
         </div>
       </div>
+    </div>
+
+    <div class="section">
+      <h2>activity · last 60 minutes</h2>
+      {activity_chart_svg}
     </div>
 
     <div class="section">

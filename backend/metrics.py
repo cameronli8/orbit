@@ -230,6 +230,58 @@ def _percentile(values: List[float], pct: float) -> float:
     return float(values[f] + (values[c] - values[f]) * (k - f))
 
 
+def get_timeseries(window_minutes: int = 60, bucket_seconds: int = 60) -> List[Dict]:
+    """Return per-bucket `{t, req, users}` for the last `window_minutes`.
+
+    Buckets are aligned to `bucket_seconds` boundaries (so 60s buckets line
+    up with wall-clock minutes). Empty buckets are zero-filled so the graph
+    x-axis stays continuous — a missing minute shouldn't collapse the next
+    minute into its slot.
+
+    `users` is COUNT(DISTINCT client_hash) inside each bucket, so the same
+    visitor hitting the site 20 times in one minute still counts as 1 for
+    that minute. Across buckets they count separately, which is desired —
+    "active users this minute" is the meaningful stat for a live room.
+    """
+    if _CONN is None:
+        return []
+
+    now = time.time()
+    cutoff = now - window_minutes * 60
+    n_buckets = (window_minutes * 60) // bucket_seconds  # e.g. 60 for 60m/60s
+
+    try:
+        c = _CONN.cursor()
+        rows = c.execute(
+            # CAST(ts/bucket AS INT)*bucket = bucket-start timestamp.
+            # bucket_seconds is a Python int we injected, not user input, so
+            # string-building the SQL is safe here.
+            f"SELECT "
+            f"  CAST(ts / {int(bucket_seconds)} AS INTEGER) * {int(bucket_seconds)} AS bt, "
+            f"  COUNT(*), "
+            f"  COUNT(DISTINCT client_hash) "
+            f"FROM events "
+            f"WHERE ts >= ? "
+            f"GROUP BY bt "
+            f"ORDER BY bt ASC",
+            (cutoff,),
+        ).fetchall()
+
+        by_t = {int(bt): (int(rc), int(uu)) for bt, rc, uu in rows}
+
+        # End at the bucket containing "now" so the rightmost bar is the
+        # current partial minute.
+        end_bucket = (int(now) // bucket_seconds) * bucket_seconds
+        series: List[Dict] = []
+        for i in range(n_buckets):
+            t = end_bucket - (n_buckets - 1 - i) * bucket_seconds
+            rc, uu = by_t.get(t, (0, 0))
+            series.append({"t": int(t), "req": rc, "users": uu})
+        return series
+    except Exception:
+        return []
+
+
 def get_stats() -> Dict:
     """Return a single snapshot of admin-dashboard-relevant numbers.
 
@@ -316,6 +368,8 @@ def get_stats() -> Dict:
             ).fetchall()
         ]
 
+        timeseries = get_timeseries(window_minutes=60, bucket_seconds=60)
+
         return {
             "generated_at":    now,
             "window_start":    float(first_seen) if first_seen else None,
@@ -332,6 +386,7 @@ def get_stats() -> Dict:
             "p50_ms":          p50,
             "p95_ms":          p95,
             "errors":          errors,
+            "timeseries":      timeseries,
         }
     except Exception as exc:
         return _empty_stats(error=str(exc))
@@ -356,5 +411,6 @@ def _empty_stats(error: Optional[str] = None) -> Dict:
         "p50_ms":             0.0,
         "p95_ms":             0.0,
         "errors":             [],
+        "timeseries":         [],
         "init_error":         error,
     }

@@ -202,9 +202,18 @@ def _fallback_profile(user_vec: Dict[str, float]) -> Dict:
     }
 
 
-def profile_user(user_vec: Dict[str, float], answers: Dict[str, str]) -> Dict:
-    """Return {headline, summary, wants, source} for the current user."""
-    if not LLM_ENABLED:
+def profile_user(
+    user_vec: Dict[str, float],
+    answers: Dict[str, str],
+    use_llm: bool = True,
+) -> Dict:
+    """Return {headline, summary, wants, source} for the current user.
+
+    Set ``use_llm=False`` to force the template fallback path — useful for
+    high-concurrency demo scenarios where upstream LLM rate limits would
+    otherwise bottleneck the request threadpool.
+    """
+    if not use_llm or not LLM_ENABLED:
         return _fallback_profile(user_vec)
 
     answers_block = "\n".join(f"  {q} -> {a}" for q, a in sorted(answers.items()))

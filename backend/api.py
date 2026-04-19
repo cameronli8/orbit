@@ -23,13 +23,17 @@ hits an in-memory pandas dataframe.
 """
 
 import json
+import os
+import re
+import time
+from collections import OrderedDict
 from typing import Dict, List, Optional
 from pathlib import Path
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -41,6 +45,7 @@ from matcher import (
     get_listings,
     evidence_for,
 )
+import metrics
 
 # How many listings each suburb serves to the map/drawer. 3 keeps the map
 # from getting cluttered while still giving the drawer enough variety.
@@ -63,6 +68,75 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ---------------------------------------------------------------------------
+# Telemetry — initialised once per worker. See backend/metrics.py.
+# Wrapped so a broken sqlite file (disk full, volume permissions, etc.)
+# can't prevent the API from booting — worst case the admin page shows zeros.
+# ---------------------------------------------------------------------------
+try:
+    metrics.init()
+except Exception:
+    pass
+
+
+# Endpoints we actually want on the admin dashboard. Static asset hits are
+# noisy and uninteresting for the live-room use case.
+_TRACKED_PREFIXES = ("/match", "/profile", "/suburb/", "/quiz", "/pois", "/api", "/health", "/polygons")
+
+
+def _canonical_endpoint(path: str) -> Optional[str]:
+    """Map a concrete request path to the route template we want to count
+    against. Returns None for things we don't track (static assets, admin
+    page itself, the SPA root)."""
+    if path.startswith("/suburb/"):
+        return "/suburb/{name}"
+    for prefix in _TRACKED_PREFIXES:
+        if prefix.endswith("/"):
+            if path.startswith(prefix):
+                return prefix.rstrip("/")
+        elif path == prefix:
+            return prefix
+    return None
+
+
+@app.middleware("http")
+async def _telemetry_middleware(request: Request, call_next):
+    """Time the request, hash the client, record the outcome. Must never
+    raise out of this function — telemetry failure is strictly lower priority
+    than the actual response."""
+    endpoint = _canonical_endpoint(request.url.path)
+    if endpoint is None:
+        return await call_next(request)
+
+    t0 = time.perf_counter()
+    status = 500
+    error: Optional[str] = None
+    try:
+        response = await call_next(request)
+        status = response.status_code
+        return response
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        raise
+    finally:
+        try:
+            latency_ms = (time.perf_counter() - t0) * 1000.0
+            xff = request.headers.get("x-forwarded-for", request.client.host if request.client else "")
+            ua = request.headers.get("user-agent", "")
+            cache_hit = bool(getattr(request.state, "cache_hit", False))
+            metrics.record(
+                endpoint=endpoint,
+                status=status,
+                latency_ms=latency_ms,
+                client=metrics.client_hash(xff, ua),
+                cache_hit=cache_hit,
+                error=error,
+            )
+        except Exception:
+            # Telemetry failure must never surface to the caller.
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +203,13 @@ class ProfileRequest(BaseModel):
         None,
         description="Direct six-dim taste vector; skips score_user when set.",
     )
+    ai: bool = Field(
+        False,
+        description="When true, call the LLM to generate the profile copy. "
+                    "Default off so high-concurrency events (e.g. a live demo "
+                    "to a room of 300) don't bottleneck on upstream LLM rate "
+                    "limits — the template fallback is used instead.",
+    )
 
 
 class ProfileResponse(BaseModel):
@@ -144,6 +225,28 @@ class ProfileResponse(BaseModel):
 # ---------------------------------------------------------------------------
 def _dim_dict(row: pd.Series) -> DimensionScores:
     return DimensionScores(**{d: float(row[d]) for d in DIMENSIONS})
+
+
+# /match result cache — keyed on the full request shape so identical quiz
+# answers (common under demo load: many users land on the same handful of
+# answer combos) skip the scoring + explanation + listings pipeline entirely.
+# Bounded OrderedDict used as a crude LRU — popitem(last=False) evicts oldest.
+# The CPython GIL makes the dict ops effectively atomic; occasional double
+# compute under a race is harmless and cheap.
+_MATCH_CACHE: "OrderedDict[tuple, MatchResponse]" = OrderedDict()
+_MATCH_CACHE_MAX = 256
+
+
+def _match_cache_key(req: MatchRequest) -> Optional[tuple]:
+    """Build a hashable cache key. Returns None when the request is malformed
+    (no answers and no vector) — the handler raises 400 downstream."""
+    budget = round(float(req.budget), 2)
+    if req.answers:
+        return ("answers", tuple(sorted(req.answers.items())), budget, req.limit)
+    if req.user_vector is not None:
+        vec = req.user_vector.model_dump()
+        return ("vector", tuple(sorted(vec.items())), budget, req.limit)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +274,7 @@ def get_quiz():
 
 
 @app.post("/match", response_model=MatchResponse)
-def post_match(req: MatchRequest):
+def post_match(req: MatchRequest, request: Request):
     """Score every suburb against the user's taste vector and budget, return
     the ranked list with explanations.
 
@@ -180,7 +283,21 @@ def post_match(req: MatchRequest):
       • Vector path (slider quiz):             user_vector used directly.
     Scoring logic (score_suburbs) is identical in both cases; only the
     vector origin differs.
+
+    Responses are cached in-process by (answers|vector, budget, limit) — many
+    users during a live demo converge on a small set of answer combos, so the
+    first hit pays the full cost and the rest are near-free.
     """
+    cache_key = _match_cache_key(req)
+    if cache_key is not None:
+        cached = _MATCH_CACHE.get(cache_key)
+        if cached is not None:
+            _MATCH_CACHE.move_to_end(cache_key)
+            # Flag for the telemetry middleware so the admin dashboard's
+            # cache-hit rate reflects what actually happened.
+            request.state.cache_hit = True
+            return cached
+
     if req.user_vector is not None:
         user_vec = req.user_vector.model_dump()
     elif req.answers:
@@ -217,10 +334,16 @@ def post_match(req: MatchRequest):
             )
         )
 
-    return MatchResponse(
+    response = MatchResponse(
         user_vector=DimensionScores(**user_vec),
         suburbs=suburbs,
     )
+
+    if cache_key is not None:
+        _MATCH_CACHE[cache_key] = response
+        if len(_MATCH_CACHE) > _MATCH_CACHE_MAX:
+            _MATCH_CACHE.popitem(last=False)
+    return response
 
 
 @app.post("/profile", response_model=ProfileResponse)
@@ -243,7 +366,7 @@ def post_profile(req: ProfileRequest):
             status_code=400,
             detail="Provide either `answers` or `user_vector`.",
         )
-    prof = profile_user(user_vec, answers)
+    prof = profile_user(user_vec, answers, use_llm=req.ai)
     return ProfileResponse(
         headline=prof.get("headline", "Your Orbit profile"),
         summary=prof.get("summary", ""),
@@ -263,7 +386,7 @@ def get_suburb(
     culinary:      Optional[float] = Query(None, ge=0, le=100),
     community:     Optional[float] = Query(None, ge=0, le=100),
     persona:       Optional[str]   = Query(None, description="User persona summary from /profile — grounds LLM copy."),
-    ai:            bool            = Query(True,  description="Set false to skip LLM calls."),
+    ai:            bool            = Query(False, description="Set true to enrich the drawer with LLM-written copy. Default off for demo-load safety — template explanations always fire."),
 ):
     """Full drawer payload for a single suburb.
 
@@ -413,6 +536,256 @@ def api_info():
         "polygons_loaded": _load_geojson() is not None,
         "llm": llm_status(),
     }
+
+
+# ---------------------------------------------------------------------------
+# Admin dashboard — `/admin-{token}`.
+#
+# Gate is `ADMIN_TOKEN` env var. Unset → the route returns 404, effectively
+# disabling the admin page. Any mismatched token also returns 404 (rather
+# than 403) so the path's existence isn't advertised via a different error.
+# ---------------------------------------------------------------------------
+import secrets as _secrets  # local import to keep the main import block short
+
+
+def _admin_token_valid(candidate: str) -> bool:
+    expected = os.environ.get("ADMIN_TOKEN", "")
+    if not expected:
+        return False
+    # Constant-time compare so we don't leak token length via timing — cheap
+    # defence but free to enable.
+    return _secrets.compare_digest(expected, candidate)
+
+
+def _fmt_duration(seconds: Optional[float]) -> str:
+    if not seconds or seconds <= 0:
+        return "—"
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+def _render_admin(stats: Dict) -> str:
+    """Server-render the admin dashboard as a single HTML doc. Manual refresh
+    only (see the /match cache comment: we want the admin view to reflect
+    exactly one point-in-time read, not a flickering auto-update)."""
+    endpoints_rows = "".join(
+        f"<tr><td>{_html_escape(e['endpoint'])}</td><td class='num'>{e['count']:,}</td></tr>"
+        for e in stats.get("endpoints", [])
+    ) or "<tr><td colspan='2' class='muted'>no traffic in the last hour</td></tr>"
+
+    errors_rows = "".join(
+        f"<tr><td class='num muted'>{e['age_s']:.0f}s ago</td>"
+        f"<td>{_html_escape(e['endpoint'])}</td>"
+        f"<td class='num'>{e['status']}</td>"
+        f"<td class='err'>{_html_escape(e['error'] or '')}</td></tr>"
+        for e in stats.get("errors", [])
+    ) or "<tr><td colspan='4' class='muted'>no errors — healthy</td></tr>"
+
+    now_ts = stats.get("generated_at") or time.time()
+    window_start = stats.get("window_start")
+    window_age = (now_ts - window_start) if window_start else None
+
+    llm = llm_status() or {}
+    llm_enabled = bool(llm.get("enabled"))
+    llm_model = llm.get("model", "—")
+
+    try:
+        worker_pid = os.getpid()
+    except Exception:
+        worker_pid = 0
+
+    cache_size = len(_MATCH_CACHE)
+
+    init_err = stats.get("init_error")
+    init_err_banner = (
+        f"<div class='banner err'>metrics init error: {_html_escape(init_err)}</div>"
+        if init_err else ""
+    )
+
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="robots" content="noindex,nofollow" />
+  <title>Orbit · admin</title>
+  <style>
+    :root {{
+      --bg: #0b0d10;
+      --panel: #12161b;
+      --panel-2: #181d24;
+      --text: #e6ebf0;
+      --muted: #6e7681;
+      --accent: #4ade80;
+      --warn: #f59e0b;
+      --err: #ef4444;
+      --border: #1f242c;
+    }}
+    * {{ box-sizing: border-box; }}
+    html, body {{ margin: 0; padding: 0; background: var(--bg); color: var(--text);
+                  font-family: -apple-system, BlinkMacSystemFont, "Inter", system-ui, sans-serif; }}
+    header {{ padding: 24px 28px; border-bottom: 1px solid var(--border); display: flex;
+              align-items: center; justify-content: space-between; }}
+    header h1 {{ margin: 0; font-size: 18px; letter-spacing: 0.02em; }}
+    header .sub {{ color: var(--muted); font-size: 13px; }}
+    main {{ max-width: 1200px; margin: 0 auto; padding: 24px 28px 48px; }}
+    .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+             gap: 14px; margin-bottom: 24px; }}
+    .card {{ background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+             padding: 16px 18px; }}
+    .card .label {{ color: var(--muted); font-size: 12px; text-transform: uppercase;
+                    letter-spacing: 0.06em; margin-bottom: 8px; }}
+    .card .value {{ font-size: 28px; font-weight: 600; letter-spacing: -0.01em; }}
+    .card .sub {{ color: var(--muted); font-size: 12px; margin-top: 4px; }}
+    .section {{ background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+                padding: 18px 20px; margin-bottom: 18px; }}
+    .section h2 {{ margin: 0 0 14px; font-size: 14px; color: var(--muted);
+                   text-transform: uppercase; letter-spacing: 0.08em; font-weight: 600; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 14px; }}
+    th, td {{ padding: 8px 10px; text-align: left; border-bottom: 1px solid var(--border); }}
+    th {{ color: var(--muted); font-weight: 500; font-size: 12px; text-transform: uppercase;
+          letter-spacing: 0.06em; }}
+    tr:last-child td {{ border-bottom: none; }}
+    td.num, th.num {{ text-align: right; font-variant-numeric: tabular-nums; }}
+    .muted {{ color: var(--muted); }}
+    .err {{ color: var(--err); font-family: ui-monospace, Menlo, monospace; font-size: 12px; }}
+    .dot {{ display: inline-block; width: 8px; height: 8px; border-radius: 50%;
+            background: var(--muted); margin-right: 8px; }}
+    .dot.ok {{ background: var(--accent); box-shadow: 0 0 6px rgba(74,222,128,0.6); }}
+    .dot.warn {{ background: var(--warn); }}
+    .dot.err {{ background: var(--err); }}
+    .actions {{ display: flex; gap: 10px; align-items: center; }}
+    .btn {{ background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+            padding: 8px 14px; border-radius: 6px; font-size: 13px; cursor: pointer;
+            text-decoration: none; display: inline-block; }}
+    .btn:hover {{ background: #222830; }}
+    .banner {{ padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; font-size: 13px; }}
+    .banner.err {{ background: rgba(239,68,68,0.1); border: 1px solid rgba(239,68,68,0.3); color: var(--err); }}
+    .row {{ display: flex; gap: 14px; flex-wrap: wrap; }}
+    .row .card {{ flex: 1 1 220px; }}
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>Orbit · admin</h1>
+      <div class="sub">live activity · generated {_html_escape(time.strftime("%H:%M:%S", time.localtime(now_ts)))}</div>
+    </div>
+    <div class="actions">
+      <a class="btn" href="">refresh</a>
+    </div>
+  </header>
+
+  <main>
+    {init_err_banner}
+
+    <div class="grid">
+      <div class="card">
+        <div class="label">unique users · last 5m</div>
+        <div class="value">{stats['unique_users_5m']:,}</div>
+        <div class="sub">{stats['unique_users_1h']:,} in last hour · {stats['unique_users_all']:,} all-time</div>
+      </div>
+      <div class="card">
+        <div class="label">requests · last 5m</div>
+        <div class="value">{stats['req_last_5m']:,}</div>
+        <div class="sub">{stats['req_per_min_last_5']} req/min avg</div>
+      </div>
+      <div class="card">
+        <div class="label">total requests</div>
+        <div class="value">{stats['total_requests']:,}</div>
+        <div class="sub">window: {_fmt_duration(window_age)}</div>
+      </div>
+      <div class="card">
+        <div class="label">latency · last 5m</div>
+        <div class="value">{stats['p50_ms']:.0f} <span style="font-size:16px;color:var(--muted)">ms</span></div>
+        <div class="sub">p95: {stats['p95_ms']:.0f} ms</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>system health</h2>
+      <div class="row">
+        <div class="card">
+          <div class="label">api</div>
+          <div class="value" style="font-size:16px"><span class="dot ok"></span>ok</div>
+          <div class="sub">worker pid {worker_pid}</div>
+        </div>
+        <div class="card">
+          <div class="label">llm</div>
+          <div class="value" style="font-size:16px">
+            <span class="dot {'ok' if llm_enabled else 'warn'}"></span>
+            {'enabled' if llm_enabled else 'fallback-only'}
+          </div>
+          <div class="sub">{_html_escape(str(llm_model))}</div>
+        </div>
+        <div class="card">
+          <div class="label">/match cache</div>
+          <div class="value" style="font-size:16px">{stats['cache_hit_rate']}%</div>
+          <div class="sub">{cache_size} keys cached · {stats['match_cache_hits_1h']}/{stats['match_requests_1h']} hit 1h</div>
+        </div>
+        <div class="card">
+          <div class="label">suburbs loaded</div>
+          <div class="value" style="font-size:16px">{len(SUBURBS)}</div>
+          <div class="sub">in-memory dataframe</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>endpoint traffic · last hour</h2>
+      <table>
+        <thead><tr><th>endpoint</th><th class="num">requests</th></tr></thead>
+        <tbody>{endpoints_rows}</tbody>
+      </table>
+    </div>
+
+    <div class="section">
+      <h2>recent errors</h2>
+      <table>
+        <thead><tr><th>when</th><th>endpoint</th><th class="num">code</th><th>detail</th></tr></thead>
+        <tbody>{errors_rows}</tbody>
+      </table>
+    </div>
+
+    <p class="muted" style="font-size:12px;margin-top:28px">
+      manual refresh only · worker-local cache + shared sqlite events ·
+      hidden path, unindexed by design
+    </p>
+  </main>
+</body>
+</html>
+"""
+
+
+def _html_escape(s) -> str:
+    if s is None:
+        return ""
+    return (
+        str(s)
+        .replace("&", "&amp;")
+        .replace("<", "&lt;")
+        .replace(">", "&gt;")
+        .replace('"', "&quot;")
+        .replace("'", "&#39;")
+    )
+
+
+@app.get("/admin-{token}", include_in_schema=False)
+def admin_dashboard(token: str):
+    """Secret-URL-gated admin page. Token comes from ADMIN_TOKEN env var.
+    Returns 404 on missing/mismatched token so the endpoint's existence is
+    not leaked through a 403."""
+    if not _admin_token_valid(token):
+        # 404 response body intentionally mimics StaticFiles so probers can't
+        # distinguish this from any other missing path.
+        return HTMLResponse(status_code=404, content="Not Found")
+    stats = metrics.get_stats()
+    return HTMLResponse(content=_render_admin(stats))
 
 
 # ---------------------------------------------------------------------------

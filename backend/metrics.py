@@ -91,7 +91,69 @@ def init() -> None:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_ts ON events(ts);")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_events_endpoint ON events(endpoint);")
+
+    # Cross-worker key/value settings — used for runtime toggles like the AI
+    # kill-switch. Lives in the same db so one sqlite connection covers both.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS settings (
+            key        TEXT PRIMARY KEY,
+            value      TEXT NOT NULL,
+            updated_at REAL NOT NULL
+        );
+        """
+    )
     _CONN = conn
+
+
+# ---------------------------------------------------------------------------
+# Settings — a tiny key/value layer for live runtime toggles (e.g. the admin
+# AI kill-switch). Shared across all uvicorn workers via the same sqlite db.
+#
+# Reads are cached per-process for _SETTINGS_TTL seconds so hot paths don't
+# pound sqlite on every request. A 2-second staleness window is fine: the
+# only consumer is the admin toggle, where the click-to-effect latency being
+# ≤ 2 seconds is imperceptible.
+# ---------------------------------------------------------------------------
+_SETTINGS_CACHE: Dict[str, tuple] = {}
+_SETTINGS_TTL = 2.0
+
+
+def get_setting(key: str, default: str = "") -> str:
+    """Return a setting value (string). Uses a short in-process cache."""
+    now = time.time()
+    cached = _SETTINGS_CACHE.get(key)
+    if cached and (now - cached[1]) < _SETTINGS_TTL:
+        return cached[0]
+    if _CONN is None:
+        return default
+    try:
+        row = _CONN.execute(
+            "SELECT value FROM settings WHERE key = ?", (key,)
+        ).fetchone()
+        val = row[0] if row else default
+        _SETTINGS_CACHE[key] = (val, now)
+        return val
+    except Exception:
+        return default
+
+
+def set_setting(key: str, value: str) -> None:
+    """Upsert a setting. Invalidates the local cache immediately so the calling
+    worker sees the new value on its next read (other workers see it within
+    _SETTINGS_TTL seconds)."""
+    if _CONN is None:
+        return
+    try:
+        _CONN.execute(
+            "INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE "
+            "SET value = excluded.value, updated_at = excluded.updated_at",
+            (key, value, time.time()),
+        )
+        _SETTINGS_CACHE[key] = (value, time.time())
+    except Exception:
+        pass
 
 
 def client_hash(xff: Optional[str], ua: Optional[str]) -> str:

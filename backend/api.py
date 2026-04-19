@@ -33,7 +33,7 @@ from pathlib import Path
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, Response
+from fastapi.responses import JSONResponse, FileResponse, HTMLResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -204,11 +204,12 @@ class ProfileRequest(BaseModel):
         description="Direct six-dim taste vector; skips score_user when set.",
     )
     ai: bool = Field(
-        False,
+        True,
         description="When true, call the LLM to generate the profile copy. "
-                    "Default off so high-concurrency events (e.g. a live demo "
-                    "to a room of 300) don't bottleneck on upstream LLM rate "
-                    "limits — the template fallback is used instead.",
+                    "The effective behaviour is gated by the admin kill-switch "
+                    "(metrics.get_setting('ai_enabled')), so the runtime state "
+                    "is: request.ai AND ai_enabled. Flip the kill-switch from "
+                    "the admin dashboard if the room is getting hammered.",
     )
 
 
@@ -235,6 +236,13 @@ def _dim_dict(row: pd.Series) -> DimensionScores:
 # compute under a race is harmless and cheap.
 _MATCH_CACHE: "OrderedDict[tuple, MatchResponse]" = OrderedDict()
 _MATCH_CACHE_MAX = 256
+
+
+def _ai_enabled() -> bool:
+    """True iff the admin kill-switch is set to 'true'. Defaults to on so a
+    missing setting behaves like the pre-toggle default. Cached in-process
+    for _SETTINGS_TTL seconds inside metrics.get_setting."""
+    return metrics.get_setting("ai_enabled", "true").lower() == "true"
 
 
 def _match_cache_key(req: MatchRequest) -> Optional[tuple]:
@@ -366,7 +374,10 @@ def post_profile(req: ProfileRequest):
             status_code=400,
             detail="Provide either `answers` or `user_vector`.",
         )
-    prof = profile_user(user_vec, answers, use_llm=req.ai)
+    # Effective LLM usage = per-request opt-in AND global kill-switch on.
+    # The admin dashboard toggles the kill-switch; during a room-of-300 spike
+    # the operator can flip it off without a redeploy.
+    prof = profile_user(user_vec, answers, use_llm=req.ai and _ai_enabled())
     return ProfileResponse(
         headline=prof.get("headline", "Your Orbit profile"),
         summary=prof.get("summary", ""),
@@ -386,7 +397,7 @@ def get_suburb(
     culinary:      Optional[float] = Query(None, ge=0, le=100),
     community:     Optional[float] = Query(None, ge=0, le=100),
     persona:       Optional[str]   = Query(None, description="User persona summary from /profile — grounds LLM copy."),
-    ai:            bool            = Query(False, description="Set true to enrich the drawer with LLM-written copy. Default off for demo-load safety — template explanations always fire."),
+    ai:            bool            = Query(True,  description="Set true to enrich the drawer with LLM-written copy. Effective state is gated by the admin kill-switch (ai_enabled setting); template explanations always fire regardless."),
 ):
     """Full drawer payload for a single suburb.
 
@@ -424,7 +435,9 @@ def get_suburb(
     evidence = evidence_for(row, user_vec)
 
     ai_payload = None
-    if ai:
+    # Gate on both the request flag AND the admin kill-switch — a per-request
+    # `ai=false` still disables AI even when the global switch is on.
+    if ai and _ai_enabled():
         ai_payload = explain_suburb(
             evidence,
             profile_summary=(persona or ""),
@@ -569,10 +582,13 @@ def _fmt_duration(seconds: Optional[float]) -> str:
     return f"{s}s"
 
 
-def _render_admin(stats: Dict) -> str:
+def _render_admin(stats: Dict, token: str = "") -> str:
     """Server-render the admin dashboard as a single HTML doc. Manual refresh
     only (see the /match cache comment: we want the admin view to reflect
-    exactly one point-in-time read, not a flickering auto-update)."""
+    exactly one point-in-time read, not a flickering auto-update).
+
+    The token is needed for form actions (e.g. the AI kill-switch toggle).
+    """
     endpoints_rows = "".join(
         f"<tr><td>{_html_escape(e['endpoint'])}</td><td class='num'>{e['count']:,}</td></tr>"
         for e in stats.get("endpoints", [])
@@ -591,8 +607,36 @@ def _render_admin(stats: Dict) -> str:
     window_age = (now_ts - window_start) if window_start else None
 
     llm = llm_status() or {}
-    llm_enabled = bool(llm.get("enabled"))
+    llm_configured = bool(llm.get("enabled"))
     llm_model = llm.get("model", "—")
+
+    # Runtime kill-switch — independent of whether the LLM is configured.
+    # Effective AI = llm_configured AND ai_switch_on. The toggle button lets
+    # the demo operator flip ai_switch_on live without a redeploy.
+    ai_switch_on = metrics.get_setting("ai_enabled", "true").lower() == "true"
+    ai_effective = llm_configured and ai_switch_on
+    if not llm_configured:
+        ai_state_label = "fallback-only"
+        ai_state_sub = f"{_html_escape(str(llm_model))} · no API key"
+        ai_dot = "warn"
+    elif not ai_switch_on:
+        ai_state_label = "disabled"
+        ai_state_sub = f"{_html_escape(str(llm_model))} · kill-switch on"
+        ai_dot = "warn"
+    else:
+        ai_state_label = "enabled"
+        ai_state_sub = f"{_html_escape(str(llm_model))} · live"
+        ai_dot = "ok"
+
+    toggle_btn = ""
+    if token and llm_configured:
+        toggle_label = "turn off" if ai_switch_on else "turn on"
+        toggle_btn = (
+            f"<form method='post' action='/admin-{_html_escape(token)}/toggle-ai' "
+            f"style='margin:10px 0 0 0'>"
+            f"<button class='btn' type='submit'>{toggle_label}</button>"
+            f"</form>"
+        )
 
     try:
         worker_pid = os.getpid()
@@ -716,12 +760,13 @@ def _render_admin(stats: Dict) -> str:
           <div class="sub">worker pid {worker_pid}</div>
         </div>
         <div class="card">
-          <div class="label">llm</div>
+          <div class="label">ai explanations</div>
           <div class="value" style="font-size:16px">
-            <span class="dot {'ok' if llm_enabled else 'warn'}"></span>
-            {'enabled' if llm_enabled else 'fallback-only'}
+            <span class="dot {ai_dot}"></span>
+            {ai_state_label}
           </div>
-          <div class="sub">{_html_escape(str(llm_model))}</div>
+          <div class="sub">{ai_state_sub}</div>
+          {toggle_btn}
         </div>
         <div class="card">
           <div class="label">/match cache</div>
@@ -785,7 +830,19 @@ def admin_dashboard(token: str):
         # distinguish this from any other missing path.
         return HTMLResponse(status_code=404, content="Not Found")
     stats = metrics.get_stats()
-    return HTMLResponse(content=_render_admin(stats))
+    return HTMLResponse(content=_render_admin(stats, token=token))
+
+
+@app.post("/admin-{token}/toggle-ai", include_in_schema=False)
+def admin_toggle_ai(token: str):
+    """Flip the ai_enabled kill-switch. Form-POST target from the admin UI.
+    303-redirects back to the dashboard so the browser reloads with the new
+    state visible and a refresh doesn't re-submit the form."""
+    if not _admin_token_valid(token):
+        return HTMLResponse(status_code=404, content="Not Found")
+    current = metrics.get_setting("ai_enabled", "true").lower() == "true"
+    metrics.set_setting("ai_enabled", "false" if current else "true")
+    return RedirectResponse(url=f"/admin-{token}", status_code=303)
 
 
 # ---------------------------------------------------------------------------

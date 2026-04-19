@@ -144,13 +144,47 @@ For deeper notes on the scoring pipeline, sanity checks, and LLM integration, se
 
 Kings Cross, Potts Point, and Darlinghurst top social energy. Enmore, Erskineville, Petersham, and Dulwich Hill top aesthetic. Coogee, Bronte, Manly, and Bondi top outdoor. Cabramatta tops culinary on Vietnamese-Chinese density plus cuisine entropy. Mosman, Lane Cove, and Neutral Bay top community. A hardcore beach persona ranks Bondi first and Manly second; a balanced "beach but also values food and community" persona correctly prefers Tempe over spiky pure-beach suburbs, which is the behaviour that justifies the mean-centring trick.
 
-## Attribution
+## Data attribution
 
-- Foursquare Open Source Places (ODbL) — [huggingface.co/datasets/foursquare/fsq-os-places](https://huggingface.co/datasets/foursquare/fsq-os-places)
-- OpenStreetMap (ODbL) — © OpenStreetMap contributors
-- ABS Suburbs and Localities (CC BY 4.0)
-- NSW Fair Trading Rent and Sales Report
-- Domain API for live listings where credentials are configured
+- **Foursquare Open Source Places** (ODbL) — [huggingface.co/datasets/foursquare/fsq-os-places](https://huggingface.co/datasets/foursquare/fsq-os-places) — powers the drawer's "Real places nearby" card.
+- **OpenStreetMap** (ODbL) — © OpenStreetMap contributors — powers the scoring pipeline (7,382 POIs across the Sydney metro) via the public [Overpass API](https://overpass-api.de/).
+- **ABS Suburbs and Localities** (CC BY 4.0) — [Australian Bureau of Statistics](https://www.abs.gov.au/) — polygon boundaries for hover/click targets.
+- **NSW Fair Trading Rent and Sales Report** — postcode-level 2BR median rents (December 2025 quarter).
+- **Domain Listings API** — live 2BR listings when credentials are configured; otherwise mock listings that deep-link to [realestate.com.au](https://www.realestate.com.au/).
+
+## Open source dependencies
+
+Orbit is built on the shoulders of a lot of excellent open source work. Everything listed here is either in `backend/requirements.txt` or loaded directly by `index.html`.
+
+**Backend (Python)**
+
+- [FastAPI](https://github.com/tiangolo/fastapi) (MIT) — web framework
+- [Uvicorn](https://github.com/encode/uvicorn) (BSD-3-Clause) — ASGI server
+- [Pydantic](https://github.com/pydantic/pydantic) (MIT) — request/response validation
+- [Polars](https://github.com/pola-rs/polars) (MIT) — data pipeline (Parquet, group-by, percentile ranking)
+- [PyArrow](https://github.com/apache/arrow) (Apache-2.0) — Parquet I/O backend
+- [pandas](https://github.com/pandas-dev/pandas) (BSD-3-Clause) — some dataframe ops in the build pipeline
+- [NumPy](https://github.com/numpy/numpy) (BSD-3-Clause) — vector math in the matcher
+- [openai-python](https://github.com/openai/openai-python) (Apache-2.0) — LLM client for persona/suburb copy
+- [python-dotenv](https://github.com/theskumar/python-dotenv) (BSD-3-Clause) — env var loading
+- [Python](https://www.python.org/) (PSF License) and [SQLite](https://www.sqlite.org/) (Public Domain) — runtime + telemetry store
+
+**Frontend (vanilla JS)**
+
+- [Leaflet 1.9.4](https://github.com/Leaflet/Leaflet) (BSD-2-Clause) — map rendering, custom `GridLayer` for the per-pixel heatmap
+- [Space Grotesk](https://fonts.google.com/specimen/Space+Grotesk) (SIL Open Font License 1.1) — display font
+- [JetBrains Mono](https://github.com/JetBrains/JetBrainsMono) (SIL Open Font License 1.1) — monospace font for data/metrics
+
+**Infrastructure**
+
+- [Railway](https://railway.com/) — hosting via [Nixpacks](https://github.com/railwayapp/nixpacks) (MIT).
+- [CARTO basemaps](https://carto.com/basemaps/) — the "Positron" light_nolabels tile layer, rendered from OpenStreetMap data and styled by CARTO. Attribution is surfaced in the Leaflet attribution control on the map: *"© OpenStreetMap · © CARTO"*.
+
+## AI acknowledgement
+
+Orbit was built with substantial help from AI coding assistants — primarily Anthropic's Claude (via Claude Code and Cursor) — across the stack: the preference-weighted matcher, FastAPI cross-worker telemetry and admin kill-switch, the Leaflet per-pixel heatmap shader, the drawer UX, and large portions of the data pipeline. Product direction, the six-dimension scoring design, mean-centring and the preference-weighted reformulation, the choice of Shannon entropy and indie-to-chain ratio as derived features, and all final decisions were the author's.
+
+Runtime AI usage is narrow and gated. OpenAI's GPT-4o-mini writes the optional persona paragraph (`POST /profile`) and per-suburb copy (`GET /suburb/{name}`) when `OPENAI_API_KEY` is set and the live admin kill-switch is enabled. Every number surfaced in the UI — the six dimension bars, the "9 parks / 43% indie / 2 beaches"-style explanations, the match scores — comes from the deterministic matcher in `matcher.py`; the LLM only paraphrases an evidence blob it is handed and the frontend falls back to template strings whenever the LLM path is disabled, unavailable, or errors out. No user-facing claim originates from the model.
 
 ## License
 

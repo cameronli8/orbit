@@ -582,6 +582,87 @@ def _fmt_duration(seconds: Optional[float]) -> str:
     return f"{s}s"
 
 
+def _render_daily_chart(series: List[Dict]) -> str:
+    """Per-day dual-lane SVG chart for the long-term activity panel.
+
+    Same visual grammar as _render_activity_chart so the admin page feels
+    coherent, but bucketed by day instead of minute. Shared x-axis labels
+    show the first day, middle day, and most recent day as YYYY-MM-DD.
+    """
+    if not series or not any(p["req"] for p in series):
+        return (
+            "<div class='muted' style='padding: 32px 0; text-align: center; "
+            "font-size: 13px'>no activity in the last 30 days yet — counts "
+            "will fill in as the volume collects history</div>"
+        )
+
+    n = len(series)
+    req_max = max(1, max(p["req"] for p in series))
+    usr_max = max(1, max(p["users"] for p in series))
+
+    W, H_LANE, GAP, LABEL_H = 900.0, 70.0, 8.0, 24.0
+    total_h = H_LANE * 2 + GAP + LABEL_H
+    bar_slot = W / n
+    bar_w = max(1.0, bar_slot - 1.0)
+
+    def _bars(key: str, y_top: float, max_val: int, fill: str) -> str:
+        chunks: List[str] = []
+        for i, p in enumerate(series):
+            v = p[key]
+            if v <= 0:
+                continue
+            h = (v / max_val) * (H_LANE - 2)
+            if h < 1.5:
+                h = 1.5
+            x = i * bar_slot + 0.5
+            y = y_top + (H_LANE - h)
+            d_label = time.strftime("%Y-%m-%d", time.localtime(p["t"]))
+            chunks.append(
+                f'<rect x="{x:.2f}" y="{y:.2f}" width="{bar_w:.2f}" '
+                f'height="{h:.2f}" fill="{fill}" rx="1">'
+                f'<title>{d_label} — {p["req"]} req, {p["users"]} users</title>'
+                f'</rect>'
+            )
+        return "".join(chunks)
+
+    req_bars = _bars("req", 0.0, req_max, "#6e7681")
+    usr_bars = _bars("users", H_LANE + GAP, usr_max, "#4ade80")
+
+    d_start = time.strftime("%b %d", time.localtime(series[0]["t"]))
+    d_mid   = time.strftime("%b %d", time.localtime(series[n // 2]["t"]))
+    d_end   = time.strftime("%b %d", time.localtime(series[-1]["t"]))
+
+    label_y   = H_LANE * 2 + GAP + 16.0
+    lane2_top = H_LANE + GAP
+    axis_y1   = H_LANE
+    axis_y2   = H_LANE * 2 + GAP
+    mono = "ui-monospace,Menlo,Consolas,monospace"
+
+    return (
+        f'<svg viewBox="0 0 {W:.0f} {total_h:.0f}" width="100%" '
+        f'preserveAspectRatio="none" '
+        f'style="display:block;max-height:220px" role="img" '
+        f'aria-label="Activity over the last 30 days">'
+        f'<text x="6" y="12" fill="#6e7681" font-size="10" '
+        f'font-family="{mono}">req/day (peak {req_max})</text>'
+        f'{req_bars}'
+        f'<line x1="0" y1="{axis_y1:.2f}" x2="{W:.0f}" y2="{axis_y1:.2f}" '
+        f'stroke="#1f242c" stroke-width="0.5" />'
+        f'<text x="6" y="{lane2_top + 12:.2f}" fill="#6e7681" font-size="10" '
+        f'font-family="{mono}">unique users/day (peak {usr_max})</text>'
+        f'{usr_bars}'
+        f'<line x1="0" y1="{axis_y2:.2f}" x2="{W:.0f}" y2="{axis_y2:.2f}" '
+        f'stroke="#1f242c" stroke-width="0.5" />'
+        f'<text x="6" y="{label_y:.2f}" fill="#6e7681" font-size="10" '
+        f'font-family="{mono}">{d_start}</text>'
+        f'<text x="{W/2:.0f}" y="{label_y:.2f}" fill="#6e7681" font-size="10" '
+        f'font-family="{mono}" text-anchor="middle">{d_mid}</text>'
+        f'<text x="{W - 6:.0f}" y="{label_y:.2f}" fill="#6e7681" font-size="10" '
+        f'font-family="{mono}" text-anchor="end">{d_end}</text>'
+        f'</svg>'
+    )
+
+
 def _render_activity_chart(series: List[Dict]) -> str:
     """Build an inline SVG dual-lane bar chart for the admin's activity panel.
 
@@ -747,6 +828,7 @@ def _render_admin(stats: Dict, token: str = "") -> str:
     )
 
     activity_chart_svg = _render_activity_chart(stats.get("timeseries") or [])
+    daily_chart_svg    = _render_daily_chart(stats.get("daily_timeseries") or [])
 
     return f"""<!doctype html>
 <html lang="en">
@@ -827,9 +909,19 @@ def _render_admin(stats: Dict, token: str = "") -> str:
 
     <div class="grid">
       <div class="card">
+        <div class="label">total unique users</div>
+        <div class="value">{stats['unique_users_all']:,}</div>
+        <div class="sub">since {_fmt_duration(window_age)} ago</div>
+      </div>
+      <div class="card">
+        <div class="label">total uses</div>
+        <div class="value">{stats['total_requests']:,}</div>
+        <div class="sub">all-time requests served</div>
+      </div>
+      <div class="card">
         <div class="label">unique users · last 5m</div>
         <div class="value">{stats['unique_users_5m']:,}</div>
-        <div class="sub">{stats['unique_users_1h']:,} in last hour · {stats['unique_users_all']:,} all-time</div>
+        <div class="sub">{stats['unique_users_1h']:,} in last hour</div>
       </div>
       <div class="card">
         <div class="label">requests · last 5m</div>
@@ -837,14 +929,35 @@ def _render_admin(stats: Dict, token: str = "") -> str:
         <div class="sub">{stats['req_per_min_last_5']} req/min avg</div>
       </div>
       <div class="card">
-        <div class="label">total requests</div>
-        <div class="value">{stats['total_requests']:,}</div>
-        <div class="sub">window: {_fmt_duration(window_age)}</div>
-      </div>
-      <div class="card">
         <div class="label">latency · last 5m</div>
         <div class="value">{stats['p50_ms']:.0f} <span style="font-size:16px;color:var(--muted)">ms</span></div>
         <div class="sub">p95: {stats['p95_ms']:.0f} ms</div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h2>long-term activity</h2>
+      <div class="row">
+        <div class="card">
+          <div class="label">unique users · 24h</div>
+          <div class="value">{stats['unique_users_24h']:,}</div>
+          <div class="sub">{stats['req_24h']:,} requests</div>
+        </div>
+        <div class="card">
+          <div class="label">unique users · 7d</div>
+          <div class="value">{stats['unique_users_7d']:,}</div>
+          <div class="sub">{stats['req_7d']:,} requests</div>
+        </div>
+        <div class="card">
+          <div class="label">unique users · 30d</div>
+          <div class="value">{stats['unique_users_30d']:,}</div>
+          <div class="sub">{stats['req_30d']:,} requests</div>
+        </div>
+        <div class="card">
+          <div class="label">unique users · all-time</div>
+          <div class="value">{stats['unique_users_all']:,}</div>
+          <div class="sub">{stats['total_requests']:,} total uses</div>
+        </div>
       </div>
     </div>
 
@@ -881,6 +994,11 @@ def _render_admin(stats: Dict, token: str = "") -> str:
     <div class="section">
       <h2>activity · last 60 minutes</h2>
       {activity_chart_svg}
+    </div>
+
+    <div class="section">
+      <h2>activity · last 30 days</h2>
+      {daily_chart_svg}
     </div>
 
     <div class="section">

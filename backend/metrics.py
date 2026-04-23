@@ -51,10 +51,20 @@ _DB_PATH = Path(os.environ.get(
 # WAL mode to serialise writes. Reads never block writes under WAL.
 _CONN: Optional[sqlite3.Connection] = None
 
-# Trim the events table to this many rows on each write to keep the db small
-# during long-running demos. At ~30 req/s for an hour that's ~100k rows; we
-# cap at 50k which is plenty for "last 5 minutes of activity" queries.
-_MAX_ROWS = 50_000
+# Retention cap. Set via ORBIT_METRICS_MAX_ROWS. Default 0 == never trim —
+# the db is on a persistent Railway volume now, so we want to keep history
+# indefinitely (total-users and total-uses counters need every row to stay
+# accurate). Non-zero values re-enable the bounded trim for self-hosted
+# setups that don't want unbounded growth.
+_MAX_ROWS = int(os.environ.get("ORBIT_METRICS_MAX_ROWS", "0"))
+
+# Baseline that's added to the "all-time unique users" admin counter. This
+# represents pre-volume history that was lost to deploys wiping the ephemeral
+# metrics db. It's a display-only constant: it does NOT affect rolling windows
+# (24h/7d/30d) because those are precise time buckets, and those users were
+# seen outside any of those windows anyway. Override with env if you later
+# recover a more accurate number.
+_BASELINE_UNIQUE_USERS = int(os.environ.get("ORBIT_METRICS_BASELINE_USERS", "106"))
 
 
 def init() -> None:
@@ -200,8 +210,9 @@ def record(
 
 
 def _trim() -> None:
-    """Keep the events table bounded. Deletes the oldest rows past _MAX_ROWS."""
-    if _CONN is None:
+    """Keep the events table bounded. Deletes the oldest rows past _MAX_ROWS.
+    No-op when _MAX_ROWS <= 0 (the default) — history is retained indefinitely."""
+    if _CONN is None or _MAX_ROWS <= 0:
         return
     try:
         _CONN.execute(
@@ -282,6 +293,49 @@ def get_timeseries(window_minutes: int = 60, bucket_seconds: int = 60) -> List[D
         return []
 
 
+def get_daily_timeseries(days: int = 30) -> List[Dict]:
+    """Return per-day `{t, req, users}` for the last `days` days.
+
+    Same shape as get_timeseries, but bucketed into UTC-day boundaries
+    (86400-second buckets aligned to the unix epoch — good enough for a
+    long-term trend chart; timezone nuance is not material here). Empty
+    days are zero-filled so the x-axis stays continuous across weekends
+    or lulls.
+    """
+    if _CONN is None:
+        return []
+
+    bucket = 86_400  # seconds in a day
+    now = time.time()
+    cutoff = now - days * bucket
+
+    try:
+        c = _CONN.cursor()
+        rows = c.execute(
+            f"SELECT "
+            f"  CAST(ts / {bucket} AS INTEGER) * {bucket} AS bt, "
+            f"  COUNT(*), "
+            f"  COUNT(DISTINCT client_hash) "
+            f"FROM events "
+            f"WHERE ts >= ? "
+            f"GROUP BY bt "
+            f"ORDER BY bt ASC",
+            (cutoff,),
+        ).fetchall()
+
+        by_t = {int(bt): (int(rc), int(uu)) for bt, rc, uu in rows}
+
+        end_bucket = (int(now) // bucket) * bucket
+        series: List[Dict] = []
+        for i in range(days):
+            t = end_bucket - (days - 1 - i) * bucket
+            rc, uu = by_t.get(t, (0, 0))
+            series.append({"t": int(t), "req": rc, "users": uu})
+        return series
+    except Exception:
+        return []
+
+
 def get_stats() -> Dict:
     """Return a single snapshot of admin-dashboard-relevant numbers.
 
@@ -292,13 +346,17 @@ def get_stats() -> Dict:
         return _empty_stats()
 
     now = time.time()
-    since_5m = now - 5 * 60
-    since_1h = now - 60 * 60
+    since_5m  = now - 5 * 60
+    since_1h  = now - 60 * 60
+    since_24h = now - 24 * 60 * 60
+    since_7d  = now - 7 * 24 * 60 * 60
+    since_30d = now - 30 * 24 * 60 * 60
 
     try:
         c = _CONN.cursor()
 
-        # Totals across the full retained window (up to _MAX_ROWS rows).
+        # Totals across the full retained window. With _MAX_ROWS == 0 and a
+        # persistent volume this is the true all-time count.
         row = c.execute(
             "SELECT COUNT(*), COUNT(DISTINCT client_hash), MIN(ts) FROM events"
         ).fetchone()
@@ -313,13 +371,19 @@ def get_stats() -> Dict:
         req_last_5m, unique_users_5m = row or (0, 0)
         req_per_min_last_5 = round((req_last_5m or 0) / 5.0, 1)
 
-        # Last hour unique users — captures the room even after someone walks
-        # away from the screen for a couple of minutes.
-        row = c.execute(
-            "SELECT COUNT(DISTINCT client_hash) FROM events WHERE ts >= ?",
-            (since_1h,),
-        ).fetchone()
-        unique_users_1h = (row[0] if row else 0) or 0
+        # Rolling windows beyond 5m. Each returns (requests, distinct users) so
+        # we can show "uses" and "users" side by side on the admin dashboard.
+        def _window(since: float):
+            r = c.execute(
+                "SELECT COUNT(*), COUNT(DISTINCT client_hash) FROM events WHERE ts >= ?",
+                (since,),
+            ).fetchone()
+            return (int(r[0] or 0), int(r[1] or 0)) if r else (0, 0)
+
+        req_1h,  unique_users_1h  = _window(since_1h)
+        req_24h, unique_users_24h = _window(since_24h)
+        req_7d,  unique_users_7d  = _window(since_7d)
+        req_30d, unique_users_30d = _window(since_30d)
 
         # Per-endpoint breakdown (last hour) — which surface is getting hit.
         endpoints = [
@@ -369,16 +433,24 @@ def get_stats() -> Dict:
         ]
 
         timeseries = get_timeseries(window_minutes=60, bucket_seconds=60)
+        daily_timeseries = get_daily_timeseries(days=30)
 
         return {
             "generated_at":    now,
             "window_start":    float(first_seen) if first_seen else None,
             "total_requests":  int(total_requests or 0),
-            "unique_users_all": int(unique_users_all or 0),
+            "unique_users_all": int(unique_users_all or 0) + _BASELINE_UNIQUE_USERS,
             "unique_users_5m":  int(unique_users_5m or 0),
             "unique_users_1h":  int(unique_users_1h or 0),
+            "unique_users_24h": int(unique_users_24h),
+            "unique_users_7d":  int(unique_users_7d),
+            "unique_users_30d": int(unique_users_30d),
             "req_per_min_last_5": req_per_min_last_5,
             "req_last_5m":     int(req_last_5m or 0),
+            "req_1h":          int(req_1h),
+            "req_24h":         int(req_24h),
+            "req_7d":          int(req_7d),
+            "req_30d":         int(req_30d),
             "endpoints":       endpoints,
             "cache_hit_rate":  cache_hit_rate,
             "match_requests_1h": int(match_total),
@@ -387,6 +459,7 @@ def get_stats() -> Dict:
             "p95_ms":          p95,
             "errors":          errors,
             "timeseries":      timeseries,
+            "daily_timeseries": daily_timeseries,
         }
     except Exception as exc:
         return _empty_stats(error=str(exc))
@@ -402,8 +475,15 @@ def _empty_stats(error: Optional[str] = None) -> Dict:
         "unique_users_all":   0,
         "unique_users_5m":    0,
         "unique_users_1h":    0,
+        "unique_users_24h":   0,
+        "unique_users_7d":    0,
+        "unique_users_30d":   0,
         "req_per_min_last_5": 0.0,
         "req_last_5m":        0,
+        "req_1h":             0,
+        "req_24h":            0,
+        "req_7d":             0,
+        "req_30d":            0,
         "endpoints":          [],
         "cache_hit_rate":     0.0,
         "match_requests_1h":  0,
@@ -412,5 +492,6 @@ def _empty_stats(error: Optional[str] = None) -> Dict:
         "p95_ms":             0.0,
         "errors":             [],
         "timeseries":         [],
+        "daily_timeseries":   [],
         "init_error":         error,
     }
